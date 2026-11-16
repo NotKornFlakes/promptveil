@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PromptVeil</title>
+<style>
+  :root{--bg:#0d1117;--panel:#151b23;--panel2:#1b222c;--line:#2a333f;--ink:#e6edf3;--mute:#8b98a7;--accent:#4fd1a5;--accent-ink:#06261b;
+    --ph:#1d3b31;--ph-ink:#7ff0c6;--warn:#f2b45b;--mono:ui-monospace,"JetBrains Mono","Cascadia Code",Menlo,Consolas,monospace;--sans:system-ui,-apple-system,"Segoe UI",Cantarell,sans-serif}
+  @media (prefers-color-scheme: light){:root{--bg:#f6f7f9;--panel:#fff;--panel2:#f2f4f7;--line:#dde2e8;--ink:#14191f;--mute:#5b6775;--accent:#0f9d74;--accent-ink:#fff;--ph:#d8f5ea;--ph-ink:#075c43;--warn:#9a5b00}}
+  *{box-sizing:border-box}
+  body{margin:0;width:400px;min-height:520px;background:var(--bg);color:var(--ink);font:14px/1.45 var(--sans)}
+  body.window{width:auto}
+  header{display:flex;align-items:center;gap:10px;padding:14px 16px 10px}
+  .logo{width:30px;height:30px;border-radius:8px;background:var(--accent);display:grid;place-items:center;flex:none}
+  h1{font-size:16px;margin:0}
+  .sub{font-size:12px;color:var(--mute)}
+  .site{margin:0 16px 10px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--panel);display:flex;align-items:center;gap:10px}
+  .site .txt{flex:1;font-size:13px}
+  .site .txt b{display:block;font-size:13.5px}
+  .switch{position:relative;width:38px;height:22px;flex:none}
+  .switch input{opacity:0;width:0;height:0}
+  .switch span{position:absolute;inset:0;background:var(--line);border-radius:22px;cursor:pointer;transition:.15s}
+  .switch span::before{content:"";position:absolute;width:16px;height:16px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.15s}
+  .switch input:checked+span{background:var(--accent)}
+  .switch input:checked+span::before{transform:translateX(16px)}
+  nav{display:flex;gap:4px;padding:0 16px;border-bottom:1px solid var(--line)}
+  nav button{background:none;border:0;border-bottom:2px solid transparent;color:var(--mute);font:600 13px var(--sans);padding:8px 8px 9px;cursor:pointer}
+  nav button[aria-selected=true]{color:var(--ink);border-bottom-color:var(--accent)}
+  section{padding:12px 16px 16px;display:none}
+  section.on{display:block}
+  label{display:block;font-size:12px;color:var(--mute);margin:0 0 6px}
+  textarea,.out{width:100%;min-height:120px;resize:vertical;background:var(--panel2);color:var(--ink);border:1px solid var(--line);border-radius:9px;padding:10px;font:12.5px/1.5 var(--mono);white-space:pre-wrap;word-break:break-word}
+  .out{min-height:110px;max-height:240px;overflow:auto;margin-top:10px}
+  .out:empty::before{content:attr(data-empty);color:var(--mute)}
+  body.window .out{max-height:none}
+  textarea:focus{outline:2px solid color-mix(in srgb,var(--accent) 55%,transparent)}
+  mark{background:var(--ph);color:var(--ph-ink);border-radius:3px;padding:0 2px;font-weight:600}
+  mark.real{background:color-mix(in srgb,var(--warn) 22%,transparent);color:inherit;font-weight:500}
+  .row{display:flex;align-items:center;gap:8px;margin-top:10px}
+  .spacer{flex:1}
+  .meta{font-size:12px;color:var(--mute)}
+  button.btn{font:600 13px var(--sans);border-radius:8px;border:1px solid var(--line);background:var(--panel2);color:var(--ink);padding:7px 12px;cursor:pointer}
+  button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+  table{width:100%;border-collapse:collapse;font:12px var(--mono)}
+  td{padding:5px 4px;border-top:1px solid var(--line);word-break:break-all;vertical-align:top}
+  td:first-child{color:var(--ph-ink);white-space:nowrap;word-break:normal;width:1%;padding-right:12px}
+  .vault{max-height:300px;overflow:auto}
+  .note{font-size:12px;color:var(--mute);margin:10px 0 0}
+  .sites{font-size:12px;color:var(--mute);margin-top:12px}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent-ink)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8.2-7 10-4-1.8-7-5.5-7-10V6z"/><path d="M8.5 12h7M8.5 9h7M8.5 15h4"/></svg></div>
+  <div><h1>PromptVeil</h1><div class="sub">Redact before you prompt · 100% local</div></div>
+</header>
+
+<div class="site" id="siteBox">
+  <div class="txt" id="siteTxt"></div>
+  <label class="switch" id="siteSwitchWrap" title="Auto-scrub pastes on this site"><input type="checkbox" id="siteSwitch"><span></span></label>
+</div>
+
+<nav role="tablist">
+  <button role="tab" data-tab="restore" aria-selected="true">Restore</button>
+  <button role="tab" data-tab="scrub" aria-selected="false">Scrub</button>
+  <button role="tab" data-tab="vault" aria-selected="false">Vault</button>
+  <button role="tab" data-tab="settings" aria-selected="false">Settings</button>
+</nav>
+
+<section id="tab-restore" class="on">
+  <label for="restoreIn">Paste the AI's answer</label>
+  <textarea id="restoreIn" spellcheck="false" placeholder="Hi [TERM_2], we'll fix [HOST_1] on Tuesday…"></textarea>
+  <div class="out" id="restoreOut" data-empty="Real values appear here, only inside PromptVeil."></div>
+  <div class="row"><span class="meta" id="restoreMeta"></span><span class="spacer"></span><button class="btn primary" id="restoreCopy">Copy</button></div>
+  <p class="note">Tip: select the answer on the page, right-click → <b>Restore real values with PromptVeil</b>.</p>
+</section>
+
+<section id="tab-scrub">
+  <label for="scrubIn">For sites PromptVeil doesn't cover, scrub here and copy</label>
+  <textarea id="scrubIn" spellcheck="false" placeholder="Paste text with emails, keys, IPs…"></textarea>
+  <div class="row"><button class="btn" id="scrubGo">Scrub</button><span class="meta" id="scrubMeta"></span><span class="spacer"></span><button class="btn primary" id="scrubCopy">Copy</button></div>
+  <div class="out" id="scrubOut" data-empty="Scrubbed text appears here."></div>
+</section>
+
+<section id="tab-vault">
+  <div class="vault"><table id="vault"><tbody></tbody></table></div>
+  <div class="row">
+    <label class="meta" style="margin:0"><input type="checkbox" id="reveal"> Reveal values</label><span class="spacer"></span>
+    <button class="btn" id="reset">New session</button>
+  </div>
+  <p class="note">Kept in memory only. Never saved to disk, and erased when you close the browser. Start a new session when you start a new chat.</p>
+</section>
+
+<section id="tab-settings">
+  <label for="terms">Always hide: names, clients, codenames (one per line)</label>
+  <textarea id="terms" spellcheck="false" placeholder="Marcus Bell&#10;Riverside Dental"></textarea>
+  <label for="allow" style="margin-top:12px">Never hide (allow-list)</label>
+  <textarea id="allow" spellcheck="false" style="min-height:70px" placeholder="support@mycompany.com"></textarea>
+  <div class="row"><span class="meta" id="saved"></span></div>
+  <p class="sites">Auto-scrub on paste works on ChatGPT, Claude, Gemini, Copilot, Perplexity, DeepSeek, Mistral and Grok. It covers pasted text only, not text you type.</p>
+</section>
+
+<script src="engine.js"></script>
+<script src="popup.js"></script>
+</body>
+</html>

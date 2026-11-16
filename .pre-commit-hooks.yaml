@@ -1,0 +1,7 @@
+- id: promptveil-scan
+  name: promptveil scan
+  description: Block commits that contain secrets or personal data.
+  entry: promptveil scan
+  language: python
+  types: [text]
+  exclude: ^tests/

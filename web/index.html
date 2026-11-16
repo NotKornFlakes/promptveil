@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'">
+<meta name="referrer" content="no-referrer">
+<title>PromptVeil — redact before you prompt</title>
+<meta name="description" content="Strip secrets and personal data out of text before you paste it into ChatGPT, Claude or any AI, then put the real values back into the answer. Runs entirely in your browser.">
+<style>
+  :root{
+    --bg:#0d1117; --panel:#151b23; --panel2:#1b222c; --line:#2a333f; --ink:#e6edf3; --mute:#8b98a7;
+    --accent:#4fd1a5; --accent-ink:#06261b; --warn:#f2b45b; --ph:#1d3b31; --ph-ink:#7ff0c6; --danger:#ff7b72;
+    --mono: ui-monospace, "JetBrains Mono", "Cascadia Code", "Fira Code", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Inter, Cantarell, "Noto Sans", sans-serif;
+  }
+  @media (prefers-color-scheme: light){
+    :root{ --bg:#f6f7f9; --panel:#fff; --panel2:#f2f4f7; --line:#dde2e8; --ink:#14191f; --mute:#5b6775;
+      --accent:#0f9d74; --accent-ink:#fff; --ph:#d8f5ea; --ph-ink:#075c43; --warn:#9a5b00; --danger:#c62828; }
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 var(--sans)}
+  a{color:var(--accent)}
+  .wrap{max-width:1180px;margin:0 auto;padding:28px 20px 60px}
+  header{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:22px}
+  .brand{display:flex;align-items:center;gap:12px}
+  .logo{width:40px;height:40px;border-radius:10px;background:var(--accent);display:grid;place-items:center}
+  h1{font-size:26px;margin:0;letter-spacing:-.02em}
+  .tag{margin:2px 0 0;color:var(--mute)}
+  .badge{display:inline-flex;align-items:center;gap:8px;font-size:13px;color:var(--mute);border:1px solid var(--line);
+    border-radius:999px;padding:6px 12px;background:var(--panel)}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 25%,transparent)}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .layout{display:grid;grid-template-columns:1fr 300px;gap:16px;align-items:start}
+  @media (max-width:980px){.layout{grid-template-columns:1fr}}
+  @media (max-width:720px){.grid{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px;display:flex;flex-direction:column;min-width:0}
+  .card h2{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--mute);margin:0 0 10px;display:flex;align-items:center;gap:8px}
+  .step{display:inline-grid;place-items:center;width:20px;height:20px;border-radius:6px;background:var(--panel2);border:1px solid var(--line);color:var(--ink);font-size:12px;letter-spacing:0}
+  textarea,.out{width:100%;min-height:230px;resize:vertical;background:var(--panel2);color:var(--ink);border:1px solid var(--line);
+    border-radius:10px;padding:12px;font:13.5px/1.55 var(--mono);white-space:pre-wrap;word-break:break-word;overflow:auto}
+  textarea:focus{outline:2px solid color-mix(in srgb,var(--accent) 60%,transparent);outline-offset:1px}
+  .out{max-height:420px}
+  main .card textarea,main .card .out{flex:1}
+  .out:empty::before{content:attr(data-empty);color:var(--mute)}
+  mark{background:var(--ph);color:var(--ph-ink);border-radius:4px;padding:0 3px;font-weight:600}
+  mark.real{background:color-mix(in srgb,var(--warn) 22%,transparent);color:inherit;font-weight:500}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px}
+  .spacer{flex:1}
+  button{font:600 13.5px var(--sans);border-radius:9px;border:1px solid var(--line);background:var(--panel2);color:var(--ink);padding:8px 12px;cursor:pointer}
+  button:hover{border-color:var(--mute)}
+  button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+  button.ghost{background:transparent}
+  .meta{font-size:13px;color:var(--mute)}
+  .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px;min-height:26px}
+  .chip{font:12px var(--mono);background:var(--panel2);border:1px solid var(--line);border-radius:999px;padding:3px 9px}
+  .chip b{color:var(--accent)}
+  aside .card + .card{margin-top:16px}
+  aside textarea{min-height:90px;font-size:13px}
+  label.small{font-size:13px;color:var(--mute);display:block;margin:8px 0 6px}
+  table{width:100%;border-collapse:collapse;font:12.5px var(--mono)}
+  td{padding:5px 4px;border-top:1px solid var(--line);vertical-align:top;word-break:break-all}
+  td:first-child{color:var(--ph-ink);white-space:nowrap;word-break:normal}
+  .maptable{max-height:260px;overflow:auto}
+  .how{margin-top:28px;display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+  @media (max-width:720px){.how{grid-template-columns:1fr}}
+  .how div{border-top:2px solid var(--line);padding-top:12px}
+  .how h3{margin:0 0 4px;font-size:15px}
+  .how p{margin:0;color:var(--mute);font-size:14px}
+  footer{margin-top:34px;color:var(--mute);font-size:13px;border-top:1px solid var(--line);padding-top:16px}
+  .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%) translateY(20px);opacity:0;background:var(--ink);color:var(--bg);
+    padding:8px 14px;border-radius:8px;font-size:13.5px;transition:.2s;pointer-events:none}
+  .toast.show{opacity:1;transform:translateX(-50%)}
+  .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <div class="logo" aria-hidden="true">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--accent-ink)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8.2-7 10-4-1.8-7-5.5-7-10V6z"/><path d="M8.5 12h7M8.5 9h7M8.5 15h4"/></svg>
+      </div>
+      <div>
+        <h1>PromptVeil</h1>
+        <p class="tag">Redact before you prompt. Restore after it answers.</p>
+      </div>
+    </div>
+    <span class="badge"><span class="dot"></span>Runs 100% in your browser · no network access</span>
+  </header>
+
+  <div class="layout">
+    <main>
+      <div class="grid">
+        <section class="card">
+          <h2><span class="step">1</span>Paste your text</h2>
+          <textarea id="input" spellcheck="false" placeholder="Paste an email, log, ticket, config or document here…"></textarea>
+          <div class="row">
+            <button class="ghost" id="sample">Try a sample</button>
+            <button class="ghost" id="clearIn">Clear</button>
+          </div>
+        </section>
+        <section class="card">
+          <h2><span class="step">2</span>Safe to send to AI</h2>
+          <div class="out" id="scrubbed" data-empty="Scrubbed text appears here as you type." aria-live="polite"></div>
+          <div class="row">
+            <span class="meta" id="count">0 items redacted</span><span class="spacer"></span>
+            <button class="primary" id="copyScrubbed">Copy</button>
+          </div>
+          <div class="chips" id="chips"></div>
+        </section>
+        <section class="card">
+          <h2><span class="step">3</span>Paste the AI's answer</h2>
+          <textarea id="reply" spellcheck="false" placeholder="Paste the response containing [EMAIL_1], [IP_2]… here."></textarea>
+          <div class="row"><button class="ghost" id="clearReply">Clear</button></div>
+        </section>
+        <section class="card">
+          <h2><span class="step">4</span>Restored answer</h2>
+          <div class="out" id="restored" data-empty="Real values are put back here, only on your screen."></div>
+          <div class="row">
+            <span class="meta" id="rcount"></span><span class="spacer"></span>
+            <button class="primary" id="copyRestored">Copy</button>
+          </div>
+        </section>
+      </div>
+
+      <div class="how">
+        <div><h3>Consistent placeholders</h3><p>The same email or IP always becomes the same token, so the AI can still reason about who did what to which server.</p></div>
+        <div><h3>Nothing leaves this page</h3><p>No servers, no analytics, no fonts from a CDN. A strict Content-Security-Policy blocks every network request. View source to check.</p></div>
+        <div><h3>Your rules</h3><p>Add client names, project codenames or hostnames to always hide, and an allow-list for values you're happy to share.</p></div>
+      </div>
+    </main>
+
+    <aside>
+      <section class="card">
+        <h2>Always hide</h2>
+        <label class="small" for="terms">Names, clients, codenames: one per line</label>
+        <textarea id="terms" spellcheck="false" placeholder="Jane Doe&#10;Acme Corp&#10;Project Falcon"></textarea>
+        <label class="small" for="allow">Never hide (allow-list)</label>
+        <textarea id="allow" spellcheck="false" placeholder="support@mycompany.com"></textarea>
+      </section>
+      <section class="card">
+        <h2>This session's vault</h2>
+        <div class="maptable"><table id="map"><tbody></tbody></table></div>
+        <div class="row">
+          <label class="meta"><input type="checkbox" id="reveal"> Reveal values</label><span class="spacer"></span>
+          <button class="ghost" id="reset">New session</button>
+        </div>
+        <p class="meta" style="margin:10px 0 0">Kept in memory only. Closing the tab erases it.</p>
+      </section>
+    </aside>
+  </div>
+
+  <footer>
+    PromptVeil detects emails, phone numbers, payment cards (Luhn-checked), US SSNs, IPv4/IPv6/MAC addresses, internal hostnames,
+    private keys, AWS/GitHub/OpenAI/Anthropic/Slack/Google/Stripe keys, JWTs, and passwords in configs and connection strings.
+    It's a safety net based on pattern matching, not a guarantee: it can't recognize arbitrary names unless you list them. Review before you send.
+    Also available as a <code>promptveil</code> command-line tool.
+  </footer>
+</div>
+<div class="toast" id="toast" role="status"></div>
+
+<script id="engine">
+/* PromptVeil engine — keep in sync with src/promptveil/detectors.py + engine.py */
+(function (root) {
+  "use strict";
+  function luhnOk(raw) {
+    const d = raw.replace(/\D/g, "");
+    if (d.length < 13 || d.length > 19) return false;
+    let t = 0;
+    for (let i = 0; i < d.length; i++) {
+      let n = +d[d.length - 1 - i];
+      if (i % 2 === 1) { n *= 2; if (n > 9) n -= 9; }
+      t += n;
+    }
+    return t % 10 === 0;
+  }
+  function ssnOk(raw) {
+    const [a, g, s] = raw.split("-");
+    return !(a === "000" || a === "666" || a[0] === "9" || g === "00" || s === "0000");
+  }
+  function ipv4Ok(raw) {
+    const p = raw.split(".");
+    return p.length === 4 && p.every(x => /^\d+$/.test(x) && +x <= 255 && (x === "0" || x[0] !== "0"));
+  }
+  const D = (kind, re, priority, opts = {}) => ({ kind, re, priority, group: opts.group || 0, validator: opts.validator, label: opts.label || kind });
+  const DETECTORS = [
+    D("PRIVATE_KEY", /-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----[\s\S]+?-----END (?:[A-Z0-9 ]+ )?PRIVATE KEY-----/g, 100, { label: "private key" }),
+    D("AWS_KEY", /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, 90, { label: "AWS key" }),
+    D("GITHUB_TOKEN", /\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{50,})\b/g, 90, { label: "GitHub token" }),
+    D("API_KEY", /\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}/g, 90, { label: "AI API key" }),
+    D("SLACK_TOKEN", /\bxox[abprs]-[A-Za-z0-9-]{10,}/g, 90, { label: "Slack token" }),
+    D("GOOGLE_KEY", /\bAIza[0-9A-Za-z_-]{35}\b/g, 90, { label: "Google key" }),
+    D("STRIPE_KEY", /\b(?:sk|rk|pk)_(?:live|test)_[0-9A-Za-z]{16,}\b/g, 90, { label: "Stripe key" }),
+    D("JWT", /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g, 85, { label: "JWT" }),
+    D("PASSWORD", /\b[a-z][a-z0-9+.-]*:\/\/[^\s:/@]+:([^\s@/]+)@/gid, 85, { group: 1, label: "URL password" }),
+    D("SECRET", /(?:password|passwd|pwd|secret|api[_-]?key|access[_-]?key|auth[_-]?token|token|client[_-]?secret)["']?\s*[:=]\s*["']?([^\s"',;]{6,})/gid, 80, { group: 1, label: "secret" }),
+    D("EMAIL", /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g, 70, { label: "email" }),
+    D("CARD", /\b(?:\d[ -]?){12,18}\d\b/g, 65, { validator: luhnOk, label: "card" }),
+    D("SSN", /\b\d{3}-\d{2}-\d{4}\b/g, 65, { validator: ssnOk, label: "SSN" }),
+    D("PHONE", /(?<![\w.])(?:\+?1[ .-]?)?\(?\d{3}\)?[ .-]\d{3}[ .-]\d{4}(?![\w.])/g, 55, { label: "phone" }),
+    D("IP", /(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])/g, 60, { validator: ipv4Ok, label: "IP" }),
+    D("IPV6", /(?<![\w:])(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}(?![\w:])/g, 60, { label: "IPv6" }),
+    D("MAC", /\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b/g, 60, { label: "MAC" }),
+    D("HOST", /\b(?:[A-Za-z0-9-]+\.)+(?:internal|local|lan|corp|intranet|home\.arpa)\b/gi, 50, { label: "hostname" }),
+  ];
+  const LABELS = Object.fromEntries(DETECTORS.map(d => [d.kind, d.label]).concat([["TERM", "custom term"]]));
+  const FOLD = new Set(["EMAIL", "HOST", "TERM"]);
+  const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  class Veil {
+    constructor({ mapping = {}, terms = [], allow = [] } = {}) {
+      this.mapping = Object.assign({}, mapping); this.terms = terms; this.allow = allow;
+    }
+    find(text) {
+      const found = [];
+      const allow = new Set(this.allow.map(a => a.trim().toLowerCase()).filter(Boolean));
+      for (const d of DETECTORS) {
+        d.re.lastIndex = 0;
+        let m;
+        while ((m = d.re.exec(text))) {
+          if (m[0] === "") { d.re.lastIndex++; continue; }
+          const value = m[d.group];
+          if (!value || allow.has(value.toLowerCase())) continue;
+          if (d.validator && !d.validator(value)) continue;
+          const start = d.group ? m.indices[d.group][0] : m.index;
+          found.push({ kind: d.kind, value, start, end: start + value.length, priority: d.priority });
+        }
+      }
+      const terms = [...new Set(this.terms.map(t => t.trim()).filter(Boolean))].sort((a, b) => b.length - a.length);
+      for (const t of terms) {
+        const re = new RegExp("(?<!\\w)" + esc(t) + "(?!\\w)", "gi");
+        let m;
+        while ((m = re.exec(text))) found.push({ kind: "TERM", value: m[0], start: m.index, end: m.index + m[0].length, priority: 95 });
+      }
+      found.sort((a, b) => b.priority - a.priority || (b.end - b.start) - (a.end - a.start) || a.start - b.start);
+      const chosen = [];
+      for (const f of found) if (chosen.every(c => f.end <= c.start || f.start >= c.end)) chosen.push(f);
+      return chosen.sort((a, b) => a.start - b.start);
+    }
+    placeholderFor(kind, value) {
+      const key = FOLD.has(kind) ? value.toLowerCase() : value;
+      for (const [ph, v] of Object.entries(this.mapping)) {
+        if (ph.startsWith(kind + "_") && (FOLD.has(kind) ? v.toLowerCase() : v) === key) return ph;
+      }
+      const re = new RegExp("^" + esc(kind) + "_\\d+$");
+      const n = 1 + Object.keys(this.mapping).filter(p => re.test(p)).length;
+      const ph = kind + "_" + n;
+      this.mapping[ph] = value;
+      return ph;
+    }
+    scrubParts(text) {
+      const findings = this.find(text), parts = [];
+      let last = 0;
+      for (const f of findings) {
+        parts.push({ text: text.slice(last, f.start) });
+        parts.push({ text: "[" + this.placeholderFor(f.kind, f.value) + "]", ph: true });
+        last = f.end;
+      }
+      parts.push({ text: text.slice(last) });
+      return { parts, findings };
+    }
+    scrub(text) {
+      const { parts, findings } = this.scrubParts(text);
+      return { text: parts.map(p => p.text).join(""), findings };
+    }
+    restoreParts(text) {
+      const names = Object.keys(this.mapping).sort((a, b) => b.length - a.length).map(esc);
+      if (!names.length) return { parts: [{ text }], count: 0 };
+      const alt = names.join("|");
+      const re = new RegExp("\\[(" + alt + ")\\]|\\b(" + alt + ")\\b", "g");
+      const parts = []; let last = 0, count = 0, m;
+      while ((m = re.exec(text))) {
+        parts.push({ text: text.slice(last, m.index) });
+        parts.push({ text: this.mapping[m[1] || m[2]], real: true });
+        last = m.index + m[0].length; count++;
+      }
+      parts.push({ text: text.slice(last) });
+      return { parts, count };
+    }
+    restore(text) {
+      const { parts, count } = this.restoreParts(text);
+      return { text: parts.map(p => p.text).join(""), count };
+    }
+  }
+  root.PromptVeil = { Veil, DETECTORS, LABELS, luhnOk, ssnOk, ipv4Ok };
+})(typeof window !== "undefined" ? window : globalThis);
+</script>
+
+<script>
+(function () {
+  "use strict";
+  const { Veil, LABELS } = window.PromptVeil;
+  const $ = id => document.getElementById(id);
+  const lines = el => el.value.split("\n").map(s => s.trim()).filter(Boolean);
+  let mapping = {};          // in memory only; gone when the tab closes
+  let lastScrubbed = "", lastRestored = "";
+
+  const SAMPLE = `Hi team, customer Jane Doe (jane.doe@acme.com, 555-867-5309) can't log in.
+Her card 4111 1111 1111 1111 was charged twice. SSN on file: 123-45-6789.
+
+Server db01.corp at 10.0.4.12 shows key AKIAIOSFODNN7EXAMPLE and
+password = Sup3rS3cret! in config. Please reply to JANE.DOE@acme.com.
+DB: postgres://admin:hunter2pass@10.0.4.12:5432/prod`;
+
+  function paint(el, parts, cls) {
+    el.textContent = "";
+    for (const p of parts) {
+      if (!p.text) continue;
+      if (p.ph || p.real) { const m = document.createElement("mark"); if (p.real) m.className = "real"; m.textContent = p.text; el.appendChild(m); }
+      else el.appendChild(document.createTextNode(p.text));
+    }
+  }
+  function mask(v) { v = v.replace(/\n/g, " "); return v.length <= 4 ? "•".repeat(v.length) : v.slice(0, 2) + "•".repeat(Math.min(v.length - 4, 10)) + v.slice(-2); }
+
+  // Rebuilt from the input on every edit: numbering follows order of appearance, so the
+  // same input always yields the same placeholders and half-typed values never linger.
+  function veil() { return new Veil({ mapping: {}, terms: lines($("terms")), allow: lines($("allow")) }); }
+
+  function update() {
+    const v = veil();
+    const src = $("input").value;
+    const { parts, findings } = v.scrubParts(src);
+    mapping = v.mapping;
+    lastScrubbed = parts.map(p => p.text).join("");
+    if (src) paint($("scrubbed"), parts); else $("scrubbed").textContent = "";
+    $("count").textContent = findings.length + (findings.length === 1 ? " item redacted" : " items redacted");
+    const counts = {};
+    findings.forEach(f => counts[f.kind] = (counts[f.kind] || 0) + 1);
+    const chips = $("chips"); chips.textContent = "";
+    Object.entries(counts).sort((a, b) => b[1] - a[1]).forEach(([k, n]) => {
+      const c = document.createElement("span"); c.className = "chip";
+      const b = document.createElement("b"); b.textContent = n; c.append(b, " " + (LABELS[k] || k));
+      chips.appendChild(c);
+    });
+    restore(); drawMap();
+  }
+  function restore() {
+    const r = new Veil({ mapping }).restoreParts($("reply").value);
+    lastRestored = r.parts.map(p => p.text).join("");
+    if ($("reply").value) paint($("restored"), r.parts); else $("restored").textContent = "";
+    $("rcount").textContent = $("reply").value ? r.count + " value" + (r.count === 1 ? "" : "s") + " restored" : "";
+  }
+  function drawMap() {
+    const tb = $("map").tBodies[0]; tb.textContent = "";
+    const reveal = $("reveal").checked;
+    const entries = Object.entries(mapping);
+    if (!entries.length) { const tr = tb.insertRow(); const td = tr.insertCell(); td.colSpan = 2; td.textContent = "Empty"; td.style.color = "var(--mute)"; return; }
+    for (const [ph, v] of entries) { const tr = tb.insertRow(); tr.insertCell().textContent = ph; tr.insertCell().textContent = reveal ? v : mask(v); }
+  }
+  function toast(msg) { const t = $("toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove("show"), 1600); }
+  async function copy(text) {
+    if (!text) return toast("Nothing to copy yet");
+    try { await navigator.clipboard.writeText(text); toast("Copied"); }
+    catch { const ta = document.createElement("textarea"); ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); toast("Copied"); } catch { toast("Copy blocked: select and copy manually"); } ta.remove(); }
+  }
+
+  $("input").addEventListener("input", update);
+  $("terms").addEventListener("input", update);
+  $("allow").addEventListener("input", update);
+  $("reply").addEventListener("input", restore);
+  $("reveal").addEventListener("change", drawMap);
+  $("sample").onclick = () => { $("input").value = SAMPLE; if (!$("terms").value) $("terms").value = "Jane Doe"; update(); };
+  $("clearIn").onclick = () => { $("input").value = ""; update(); };
+  $("clearReply").onclick = () => { $("reply").value = ""; restore(); };
+  $("copyScrubbed").onclick = () => copy(lastScrubbed);
+  $("copyRestored").onclick = () => copy(lastRestored);
+  $("reset").onclick = () => { mapping = {}; $("input").value = ""; $("reply").value = ""; update(); toast("Vault cleared"); };
+  update();
+})();
+</script>
+</body>
+</html>
