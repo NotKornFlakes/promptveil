@@ -11,7 +11,9 @@
     "default_icon": { "16": "icons/16.png", "32": "icons/32.png" }
   },
   "background": { "service_worker": "background.js" },
-  "permissions": ["storage", "contextMenus", "scripting", "offscreen", "clipboardWrite"],
+  "options_ui": { "page": "options.html", "open_in_tab": true },
+  "permissions": ["storage", "contextMenus", "scripting", "offscreen", "clipboardWrite", "alarms", "idle"],
+  "optional_permissions": ["clipboardRead"],
   "host_permissions": [
     "https://chatgpt.com/*",
     "https://chat.openai.com/*",
@@ -46,7 +48,8 @@
       "description": "Restore real values in the selection and copy them"
     }
   },
+  "externally_connectable": { "ids": [] },
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'none'; connect-src 'none'"
+    "extension_pages": "script-src 'self'; object-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
   }
 }

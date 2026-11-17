@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PromptVeil settings</title>
+<style>
+  :root{--bg:#0d1117;--panel:#151b23;--panel2:#1b222c;--line:#2a333f;--ink:#e6edf3;--mute:#8b98a7;--accent:#4fd1a5;--accent-ink:#06261b;
+    --warn:#f2b45b;--bad:#ff7b72;--sans:system-ui,-apple-system,"Segoe UI",Cantarell,sans-serif}
+  @media (prefers-color-scheme: light){:root{--bg:#f6f7f9;--panel:#fff;--panel2:#f2f4f7;--line:#dde2e8;--ink:#14191f;--mute:#5b6775;--accent:#0f9d74;--accent-ink:#fff;--warn:#9a5b00;--bad:#c4302b}}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 var(--sans)}
+  main{max-width:720px;margin:0 auto;padding:36px 16px 56px}
+  h1{font-size:24px;margin:0 0 4px}
+  .lede{color:var(--mute);margin:0 0 24px}
+  section{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;margin:0 0 16px}
+  h2{font-size:17px;margin:0 0 6px}
+  p{margin:6px 0}
+  .mute{color:var(--mute);font-size:14px}
+  .status{font-weight:600}
+  .warn{border-left:4px solid var(--warn);padding-left:10px;color:var(--mute);font-size:14px}
+  form{display:grid;gap:8px;margin-top:12px;max-width:420px}
+  label{font-size:13px;color:var(--mute)}
+  input[type=password],input[type=file],select{width:100%;background:var(--panel2);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:14px var(--sans)}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  button{font:600 13px var(--sans);border-radius:8px;border:1px solid var(--line);background:var(--panel2);color:var(--ink);padding:8px 13px;cursor:pointer}
+  button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+  button.danger{color:var(--bad)}
+  button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .msg{min-height:1.4em;font-size:14px}
+  .msg.bad{color:var(--bad)}
+  hr{border:0;border-top:1px solid var(--line);margin:16px 0}
+  .radios{display:flex;flex-wrap:wrap;gap:8px 18px;margin:10px 0}
+  .radios label{display:flex;align-items:center;gap:6px;font-size:14px;color:var(--ink);cursor:pointer}
+  .radios input{accent-color:var(--accent)}
+  [hidden]{display:none !important}
+</style>
+</head>
+<body>
+<main>
+  <h1>PromptVeil settings</h1>
+  <p class="lede">Everything here stays on this device.</p>
+
+  <section id="lockSection" aria-labelledby="lockTitle">
+    <h2 id="lockTitle">Lock with a password</h2>
+    <p class="status" id="lockStatus"></p>
+    <p class="mute" id="lockExplain"></p>
+
+    <form id="setForm" autocomplete="off">
+      <label for="newPw" id="newPwLabel">New password (at least 8 characters)</label>
+      <input type="password" id="newPw" autocomplete="new-password">
+      <label for="newPw2">Repeat it</label>
+      <input type="password" id="newPw2" autocomplete="new-password">
+      <div class="row"><button class="primary" type="submit" id="setGo">Turn on password lock</button></div>
+    </form>
+
+    <form id="unlockForm" hidden>
+      <label for="unlockPw">Password</label>
+      <input type="password" id="unlockPw" autocomplete="current-password">
+      <div class="row"><button class="primary" type="submit">Unlock</button></div>
+    </form>
+
+    <div class="row" id="lockedActions" hidden style="margin-top:12px">
+      <button type="button" id="lockNow">Lock now</button>
+      <button type="button" id="removePw">Remove password</button>
+    </div>
+
+    <p class="msg" id="lockMsg" role="status"></p>
+    <p class="warn"><b>There's no password recovery.</b> PromptVeil never stores your password. If you forget it, the only way
+      back is to delete your lists and start over.</p>
+    <div class="row"><button type="button" class="danger" id="resetLists">Forgot password? Delete my lists</button></div>
+  </section>
+
+  <section aria-labelledby="idleTitle">
+    <h2 id="idleTitle">Auto-clear and auto-lock</h2>
+    <form id="idleForm">
+      <label for="idleMinutes">When PromptVeil hasn't been used for</label>
+      <select id="idleMinutes">
+        <option value="15">15 minutes</option>
+        <option value="30">30 minutes</option>
+        <option value="60">1 hour</option>
+        <option value="240">4 hours</option>
+        <option value="0">Never</option>
+      </select>
+    </form>
+    <p class="mute">…the placeholder vault is cleared, so old placeholders can't be restored any more. With a password set,
+      PromptVeil also locks then, and whenever your computer locks or sits idle that long. Closing the browser always
+      clears the vault and locks.</p>
+    <p class="msg" id="idleMsg" role="status"></p>
+  </section>
+
+  <section aria-labelledby="clipTitle">
+    <h2 id="clipTitle">Clear the clipboard</h2>
+    <p class="mute" id="clipLead">After PromptVeil copies text with real values in it, clear the clipboard after:</p>
+    <div class="radios" role="radiogroup" aria-labelledby="clipLead">
+      <label><input type="radio" name="clip" value="0"> Never</label>
+      <label><input type="radio" name="clip" value="30"> 30 seconds</label>
+      <label><input type="radio" name="clip" value="60"> 1 minute</label>
+      <label><input type="radio" name="clip" value="120"> 2 minutes</label>
+    </div>
+    <p class="mute">PromptVeil only clears it if it still holds what PromptVeil copied, so it never wipes something you
+      copied later. To check, it needs permission to read the clipboard: Chrome asks when you turn this on, and the
+      permission is given back when you turn it off. What it reads is compared in memory and never kept or sent.
+      Clipboard managers may keep their own copy.</p>
+    <p class="msg" id="clipMsg" role="status"></p>
+  </section>
+
+  <section aria-labelledby="backupTitle">
+    <h2 id="backupTitle">Backup of your lists</h2>
+    <p class="mute">The backup file is encrypted with the password you choose here (AES-256-GCM, key from PBKDF2-SHA256 with
+      600,000 iterations). It covers your "Always hide" and "Never hide" lists, not the placeholder vault.</p>
+    <form id="exportForm" autocomplete="off">
+      <label for="expPw">Backup password (at least 8 characters)</label>
+      <input type="password" id="expPw" autocomplete="new-password">
+      <label for="expPw2">Repeat it</label>
+      <input type="password" id="expPw2" autocomplete="new-password">
+      <div class="row"><button class="primary" type="submit">Download encrypted backup</button></div>
+    </form>
+    <hr>
+    <form id="importForm" autocomplete="off">
+      <label for="impFile">Backup file</label>
+      <input type="file" id="impFile" accept=".json,application/json">
+      <label for="impPw">Backup password</label>
+      <input type="password" id="impPw" autocomplete="off">
+      <div class="row"><button type="submit">Import (replaces your current lists)</button></div>
+    </form>
+    <p class="msg" id="backupMsg" role="status"></p>
+  </section>
+</main>
+<script src="options.js"></script>
+</body>
+</html>

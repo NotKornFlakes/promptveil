@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Build the browser extension.
 
-1. Copies the detection engine out of web/index.html into extension/engine.js
+1. Copies the built-in HOST allow list from src/promptveil/builtin_allow.json into
+   the engine block of web/index.html (the Python engine reads the JSON directly).
+2. Copies the detection engine out of web/index.html into extension/engine.js
    (one source of truth for the web page and the extension).
-2. Zips extension/ into dist/promptveil-extension-<version>.zip, ready to upload
+3. Zips extension/ into dist/promptveil-extension-<version>.zip, ready to upload
    to the Chrome Web Store.
 
 Usage: python3 scripts/build_extension.py
@@ -18,7 +20,25 @@ ROOT = Path(__file__).resolve().parent.parent
 EXT = ROOT / "extension"
 
 
+ALLOW_BLOCK = re.compile(
+    r"(/\* BUILTIN_HOST_ALLOW:[^\n]*\*/\n)(.*?)(\n[ \t]*/\* END BUILTIN_HOST_ALLOW \*/)", re.S)
+
+
+def sync_allow_list() -> None:
+    page = ROOT / "web" / "index.html"
+    html = page.read_text(encoding="utf-8")
+    hosts = json.loads((ROOT / "src" / "promptveil" / "builtin_allow.json").read_text(encoding="utf-8"))["host"]
+    line = f"  const BUILTIN_HOST_ALLOW = new Set({json.dumps(hosts)});"
+    new, n = ALLOW_BLOCK.subn(lambda m: m.group(1) + line + m.group(3), html)
+    if n != 1:
+        raise SystemExit("BUILTIN_HOST_ALLOW block not found in web/index.html")
+    if new != html:
+        page.write_text(new, encoding="utf-8")
+        print("updated web/index.html (built-in allow list)")
+
+
 def main() -> None:
+    sync_allow_list()
     html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
     m = re.search(r'<script id="engine">(.*?)</script>', html, re.S)
     if not m:

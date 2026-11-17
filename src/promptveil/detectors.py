@@ -10,9 +10,17 @@ Keep these in sync with the JavaScript engine in ``web/index.html``.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
+from importlib import resources
 from typing import Callable, Optional
+
+# Code identifiers and file names that look like internal hostnames (chrome.storage.local, ...).
+# Shared with the JavaScript engine: scripts/build_extension.py copies this file into web/index.html.
+BUILTIN_HOST_ALLOW = frozenset(
+    h.lower() for h in json.loads(resources.files(__package__).joinpath("builtin_allow.json").read_text(encoding="utf-8"))["host"]
+)
 
 
 @dataclass(frozen=True)
@@ -51,6 +59,10 @@ def ipv4_ok(raw: str) -> bool:
     return len(parts) == 4 and all(p.isdigit() and int(p) <= 255 and (p == "0" or not p.startswith("0")) for p in parts)
 
 
+def host_ok(raw: str) -> bool:
+    return raw.lower() not in BUILTIN_HOST_ALLOW
+
+
 I = re.IGNORECASE
 
 DETECTORS: list[Detector] = [
@@ -81,9 +93,12 @@ DETECTORS: list[Detector] = [
     Detector("IP", re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?!\w|\.\d)"), 60, validator=ipv4_ok, label="IPv4 address"),
     Detector("IPV6", re.compile(r"(?<![\w:])(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}(?![\w:])"), 60, label="IPv6 address"),
     Detector("MAC", re.compile(r"\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b"), 60, label="MAC address"),
+    # Not when it looks like code: preceded by "." (a file name such as .env.local), or followed by
+    # "." and a letter (member access such as chrome.storage.local.get), "(" or "[". A full stop
+    # ending a sentence and a ":port" still count as a hostname.
     Detector("HOST", re.compile(
-        r"\b(?:[A-Za-z0-9-]+\.)+(?:internal|local|lan|corp|intranet|home\.arpa)\b", I), 50,
-        label="Internal hostname"),
+        r"(?<!\.)\b(?:[A-Za-z0-9-]+\.)+(?:internal|local|lan|corp|intranet|home\.arpa)\b(?!\.[A-Za-z_$]|[(\[])", I), 50,
+        validator=host_ok, label="Internal hostname"),
 ]
 
 KINDS = {d.kind: d.label for d in DETECTORS} | {"TERM": "Custom term"}

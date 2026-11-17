@@ -8,7 +8,10 @@
 from __future__ import annotations
 
 import argparse
+import getpass
+import os
 import sys
+import time
 from pathlib import Path
 
 from . import __version__
@@ -30,12 +33,32 @@ def _mask(value: str) -> str:
     return value[:2] + "*" * min(len(value) - 4, 12) + value[-2:]
 
 
-def _veil(args, with_mapping: bool) -> Veil:
+def _password(args, confirm: bool = False) -> str | None:
+    """PROMPTVEIL_PASSWORD, or a prompt on the terminal with --password. Never a command-line value
+    (it would show up in shell history and the process list)."""
+    if os.environ.get("PROMPTVEIL_PASSWORD"):
+        return os.environ["PROMPTVEIL_PASSWORD"]
+    if not getattr(args, "password", False):
+        return None
+    try:
+        with open("/dev/tty"):
+            pass
+    except OSError:
+        raise vault.VaultError("--password needs a terminal to ask on; set PROMPTVEIL_PASSWORD instead.") from None
+    pw = getpass.getpass("PromptVeil vault password: ")
+    if not pw:
+        raise vault.VaultError("empty password.")
+    if confirm and getpass.getpass("Repeat it: ") != pw:
+        raise vault.VaultError("the passwords don't match.")
+    return pw
+
+
+def _veil(args, with_mapping: bool, password: str | None = None) -> Veil:
     terms = vault.read_list("terms.txt") + list(args.term or [])
     for f in args.terms_file or []:
         terms += vault.read_list_file(Path(f))
     allow = vault.read_list("allow.txt") + list(getattr(args, "allow", None) or [])
-    mapping = vault.load_mapping() if with_mapping else {}
+    mapping = vault.load_mapping(password) if with_mapping else {}
     return Veil(mapping=mapping, terms=terms, allow=allow)
 
 
@@ -50,19 +73,23 @@ def _summary(findings) -> str:
 
 
 def cmd_scrub(args) -> int:
-    v = _veil(args, with_mapping=not args.new)
+    new_vault = args.new or not vault.vault_path().exists()
+    password = _password(args, confirm=new_vault) if not args.dry_run else None
+    ttl = args.ttl if hasattr(args, "ttl") else vault.default_ttl()
+    v = _veil(args, with_mapping=not args.new, password=password)
     text = _read(args.file)
     out, findings = v.scrub(text)
-    sys.stdout.write(out)
+    # Save first: if the vault can't be written, don't hand out text that could never be restored.
     if not args.dry_run:
-        vault.save_mapping(v.mapping)
+        vault.save_mapping(v.mapping, ttl=ttl, password=password)
+    sys.stdout.write(out)
     if not args.quiet:
         print(_summary(findings), file=sys.stderr)
     return 0
 
 
 def cmd_restore(args) -> int:
-    v = Veil(mapping=vault.load_mapping())
+    v = Veil(mapping=vault.load_mapping(_password(args)))
     if not v.mapping:
         print("promptveil: vault is empty, nothing to restore (did you run scrub first?)", file=sys.stderr)
     out, n = v.restore(_read(args.file))
@@ -90,13 +117,28 @@ def cmd_scan(args) -> int:
 
 
 def cmd_show(args) -> int:
-    mapping = vault.load_mapping()
+    mapping = vault.load_mapping(_password(args))
     if not mapping:
         print("(vault is empty)")
     for ph, val in mapping.items():
         print(f"[{ph}]\t{val if args.reveal else _mask(val)}")
-    print(f"vault: {vault.vault_path()}", file=sys.stderr)
+    i = vault.info()
+    how = "not saved yet"
+    if i["exists"]:
+        how = {"keyring": "encrypted, key in your keyring", "scrypt": "encrypted with your password"}.get(i["key"], "plain text")
+        left = i["expires"] - time.time() if i["expires"] else None
+        how += ", never expires" if left is None else f", expires in {_human(left)}"
+    print(f"vault: {vault.vault_path()} ({how})", file=sys.stderr)
     return 0
+
+
+def _human(seconds: float) -> str:
+    s = max(0, int(seconds))
+    if s >= 86400:
+        return f"{s // 86400}d {s % 86400 // 3600}h"
+    if s >= 3600:
+        return f"{s // 3600}h {s % 3600 // 60}m"
+    return f"{s // 60}m"
 
 
 def cmd_forget(args) -> int:
@@ -109,6 +151,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
+    def ttl(text: str):
+        try:
+            return vault.parse_ttl(text)
+        except ValueError as e:
+            raise argparse.ArgumentTypeError(str(e)) from None
+
+    def password_opt(sp):
+        sp.add_argument("--password", action="store_true",
+                        help="ask for the vault password on the terminal (or set PROMPTVEIL_PASSWORD); needs promptveil[secure]")
+
     def word_opts(sp):
         sp.add_argument("-t", "--term", action="append", help="extra word/phrase to always redact (repeatable)")
         sp.add_argument("--terms-file", action="append", help="file with one term per line")
@@ -119,11 +171,16 @@ def build_parser() -> argparse.ArgumentParser:
     word_opts(s)
     s.add_argument("--new", action="store_true", help="start a fresh mapping instead of extending the vault")
     s.add_argument("--dry-run", action="store_true", help="don't write the vault")
+    s.add_argument("--ttl", type=ttl, default=argparse.SUPPRESS,
+                   help="delete the vault this long after this scrub, e.g. 30m, 2h, 1d or never "
+                        "(default: ttl in config.ini, else 24h)")
+    password_opt(s)
     s.add_argument("-q", "--quiet", action="store_true")
     s.set_defaults(func=cmd_scrub)
 
     r = sub.add_parser("restore", help="swap placeholders back to real values")
     r.add_argument("file", nargs="?", help="input file (default: stdin)")
+    password_opt(r)
     r.add_argument("-q", "--quiet", action="store_true")
     r.set_defaults(func=cmd_restore)
 
@@ -134,6 +191,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sh = sub.add_parser("show", help="list the placeholders in the vault")
     sh.add_argument("--reveal", action="store_true", help="show real values instead of masked ones")
+    password_opt(sh)
     sh.set_defaults(func=cmd_show)
 
     f = sub.add_parser("forget", help="delete the local vault")
@@ -143,7 +201,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    return args.func(args)
+    try:
+        if vault.purge_expired():
+            print("promptveil: the vault expired and was deleted", file=sys.stderr)
+        return args.func(args)
+    except vault.VaultError as e:
+        print(f"promptveil: {e}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

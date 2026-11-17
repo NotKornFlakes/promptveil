@@ -3,8 +3,8 @@
 (() => {
   "use strict";
   const $ = id => document.getElementById(id);
-  const SAMPLE = "Customer dana.reyes@example.com (phone 415-555-0134) can't reach db01.corp at 10.0.4.12 since Monday.\n" +
-    "Card on file 4111 1111 1111 1111. Our key is sk-proj-AbCdEfGhIjKlMnOpQrStUvWx.";
+  const SAMPLE = "Customer dana.reyes@example.com can't reach db01.corp at 10.0.4.12.\n" +
+    "Call her at 415-555-0134. Card on file 4111 1111 1111 1111. Our key is sk-proj-AbCdEfGhIjKlMnOpQrStUvWx.";
 
   chrome.commands.getAll().then(cmds => {
     const c = cmds.find(x => x.name === "restore-selection");
