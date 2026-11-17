@@ -14,6 +14,12 @@ SHOTS.mkdir(exist_ok=True)
 SECRET = ("Client Riverside Dental, manager Marcus Bell (marcus.bell@riversidedental.com, 404-555-0142).\n"
           "Server fileserver.lan at 192.168.10.25, password: Winter2026!\nCard 5555 5555 5555 4444")
 RAW = ["marcus.bell@riversidedental.com", "404-555-0142", "fileserver.lan", "192.168.10.25", "Winter2026!", "5555 5555 5555 4444", "Marcus Bell"]
+REAL = RAW + ["Riverside Dental"]  # every real value in the vault, including TERM_1
+
+# An AI answer that uses the placeholders from SECRET, and what it should restore to.
+ANSWER = "Hi [TERM_2],\nWe'll be at [TERM_1] Tuesday to fix [HOST_1] ([IP_1]). Reply to EMAIL_1."
+RESTORED = ("Hi Marcus Bell,\nWe'll be at Riverside Dental Tuesday to fix fileserver.lan (192.168.10.25). "
+            "Reply to marcus.bell@riversidedental.com.")
 
 # Stand-in for chatgpt.com: a plain <textarea>.
 TEXTAREA_PAGE = "<html><body><textarea id=box rows=8 cols=80></textarea></body></html>"
@@ -28,6 +34,28 @@ document.getElementById('ed').addEventListener('paste', e => {
 });
 </script></body></html>"""
 
+# Stand-in for a ChatGPT conversation: a user turn, two answers that must not get a button
+# (no placeholders / placeholders that aren't in the vault) and a stream() helper that types an
+# answer in piece by piece. window.seen logs every bit of text the page could observe in its DOM.
+ANSWERS_PAGE = """<html><body>
+<div data-message-author-role="user" id="u1">My question about [TERM_2]</div>
+<div data-message-author-role="assistant" id="a1">A plain answer with nothing to restore.</div>
+<div data-message-author-role="assistant" id="a2">Unknown placeholders: [EMAIL_99] and IP_42.</div>
+<div id="thread"></div>
+<script>
+window.seen = [];
+new MutationObserver(rs => { for (const r of rs) {
+  if (r.type === 'characterData') seen.push(r.target.data);
+  if (r.type === 'attributes') seen.push(String(r.target.getAttribute(r.attributeName)));
+  for (const n of r.addedNodes) seen.push(n.textContent || '');
+}}).observe(document.documentElement, {subtree: true, childList: true, characterData: true, attributes: true});
+window.stream = text => {
+  const d = document.createElement('div'); d.id = 'a3'; d.style.whiteSpace = 'pre-wrap';
+  d.setAttribute('data-message-author-role', 'assistant'); document.getElementById('thread').appendChild(d);
+  let i = 0; const t = setInterval(() => { d.append(text.slice(i, i + 6)); i += 6; if (i >= text.length) clearInterval(t); }, 25);
+};
+</script></body></html>"""
+
 def page_paste(pg, selector, text):
     """Dispatch a paste event from the *page* world, like a browser paste does."""
     pg.focus(selector)
@@ -35,6 +63,31 @@ def page_paste(pg, selector, text):
         document.querySelector(sel).dispatchEvent(new ClipboardEvent('paste', {clipboardData: dt, bubbles: true, cancelable: true})); }""",
         [selector, text])
     pg.wait_for_timeout(400)
+
+def shadow_text(pg):
+    """Text drawn inside PromptVeil's closed shadow roots (toast, buttons). CDP can pierce closed
+    shadow roots; the page's own scripts can't."""
+    cdp = pg.context.new_cdp_session(pg)
+    try:
+        root = cdp.send("DOM.getDocument", {"depth": -1, "pierce": True})["root"]
+    finally:
+        cdp.detach()
+    out = []
+    def walk(n, inside, parent):
+        inside = inside or n.get("nodeName", "").lower().startswith("promptveil-")
+        if inside and n.get("nodeType") == 3 and parent != "STYLE":
+            out.append(n.get("nodeValue", ""))
+        for c in n.get("children", []) + n.get("shadowRoots", []):
+            walk(c, inside, n.get("nodeName"))
+    walk(root, False, None)
+    return " ".join(out)
+
+def clipboard(plain):
+    """Read the clipboard the way a user would: Ctrl+V into a page PromptVeil doesn't touch."""
+    plain.bring_to_front()
+    plain.fill("#box", "")
+    plain.focus("#box"); plain.keyboard.press("Control+V"); plain.wait_for_timeout(300)
+    return plain.input_value("#box")
 
 failures = []
 def check(name, cond, detail=""):
@@ -45,7 +98,8 @@ with sync_playwright() as p, tempfile.TemporaryDirectory() as prof:
     ctx = p.chromium.launch_persistent_context(prof, executable_path=CHROME, headless=False,
         args=["--headless=new", f"--disable-extensions-except={EXT}", f"--load-extension={EXT}"],
         viewport={"width": 1100, "height": 700})
-    ctx.route("https://chatgpt.com/**", lambda r: r.fulfill(body=TEXTAREA_PAGE, content_type="text/html"))
+    ctx.route("https://chatgpt.com/**", lambda r: r.fulfill(
+        body=ANSWERS_PAGE if "/c/answers" in r.request.url else TEXTAREA_PAGE, content_type="text/html"))
     ctx.route("https://claude.ai/**", lambda r: r.fulfill(body=RICH_PAGE, content_type="text/html"))
     ctx.route("https://example.com/**", lambda r: r.fulfill(body=TEXTAREA_PAGE, content_type="text/html"))
     sw = ctx.service_workers[0] if ctx.service_workers else ctx.wait_for_event("serviceworker")
@@ -132,6 +186,52 @@ with sync_playwright() as p, tempfile.TemporaryDirectory() as prof:
         r2 = in_cs("chrome.runtime.sendMessage({type:'vault'})")
         check("content script refused restore", isinstance(r1, dict) and "error" in r1 and "marcus" not in str(r1), r1)
         check("content script refused vault", isinstance(r2, dict) and "error" in r2 and "mapping" not in r2, r2)
+        r3 = in_cs("chrome.runtime.sendMessage({type:'has', text:'see [EMAIL_1]'})")
+        check("content script 'has' gets yes/no only", r3 == {"found": True}, r3)
+        r4 = in_cs("chrome.runtime.sendMessage({type:'copyRestored', text:'mail [EMAIL_1]'})")
+        check("content script 'copyRestored' gets a count only", r4 == {"count": 1}, r4)
+        r5 = in_cs("chrome.runtime.sendMessage({type:'has', text: 'x'.repeat(1000001)})")
+        check("oversized text refused", isinstance(r5, dict) and "error" in r5, r5)
+
+    # 10. "Copy with real values" button on AI answers
+    ctx.grant_permissions(["clipboard-read", "clipboard-write"], origin="https://example.com")
+    pa = ctx.new_page(); pa.goto("https://chatgpt.com/c/answers"); pa.wait_for_timeout(800)
+    check("button: none on answers without known placeholders", pa.locator("promptveil-copy").count() == 0,
+          pa.locator("promptveil-copy").count())
+    pa.evaluate("t => stream(t)", ANSWER)
+    try:
+        pa.wait_for_selector("#a3 promptveil-copy", state="attached", timeout=5000); appeared = True
+    except Exception:
+        appeared = False
+    check("button: appears on a streamed answer with known placeholders", appeared)
+    pa.wait_for_timeout(1500)  # let the stream finish and the observer settle
+    check("button: only on that answer (not the user turn, plain or unknown-placeholder answers)",
+          pa.locator("promptveil-copy").count() == 1 and pa.locator("#a3 promptveil-copy").count() == 1,
+          pa.locator("promptveil-copy").count())
+    pg3.evaluate("t => navigator.clipboard.writeText(t)", "sentinel")
+    pa.evaluate("""() => { const h = document.querySelector('#a3 promptveil-copy'); h.click();
+        h.dispatchEvent(new MouseEvent('click', {bubbles: true, composed: true})); }""")
+    pa.wait_for_timeout(500)
+    check("button: synthetic clicks from the page don't copy", clipboard(pg3) == "sentinel", clipboard(pg3))
+    pa.bring_to_front()
+    bb = pa.locator("#a3 promptveil-copy").bounding_box()
+    pa.mouse.click(bb["x"] + 30, bb["y"] + bb["height"] / 2); pa.wait_for_timeout(800)
+    shown = shadow_text(pa)
+    check("button: toast says how many values were restored", "Copied with 5 real values restored" in shown, shown)
+    pa.screenshot(path=str(SHOTS / "ext_copy_button.png"))
+    got = clipboard(pg3)
+    check("button: clipboard holds the restored answer", got == RESTORED, repr(got))
+    dom = pa.content() + "\n".join(pa.evaluate("window.seen")) + pa.evaluate("document.body.innerText")
+    check("button: real values never entered the page DOM", not any(r in dom for r in REAL),
+          [r for r in REAL if r in dom])
+    check("button: no real values in the toast or button", not any(r in shown for r in REAL), shown)
+    check("offscreen document closed after copying",
+          sw.evaluate("chrome.runtime.getContexts({contextTypes: ['OFFSCREEN_DOCUMENT']})") == [])
+
+    # Last, because it empties the vault: starting a new session removes the buttons.
+    pop.click("nav button[data-tab=vault]"); pop.click("#reset"); pa.wait_for_timeout(1500)
+    check("button: removed when the vault is reset", pa.locator("promptveil-copy").count() == 0,
+          pa.locator("promptveil-copy").count())
 
     ctx.close()
 
