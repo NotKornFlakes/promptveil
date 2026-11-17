@@ -73,8 +73,22 @@ paused. Session storage is also memory only, and is closed to content scripts.
 
 ### Command-line tool
 
-The CLI keeps its vault at `~/.local/share/promptveil/vault.json` with `0600` permissions, in plain text. Run
-`promptveil forget` when you're done.
+| What | Where | Protection |
+|---|---|---|
+| Placeholder vault | `~/.local/share/promptveil/vault.json` (`0600`) | With `pip install 'promptveil[secure]'`: AES-256-GCM with a fresh random 12-byte nonce on every write. The header (format version, creation time, expiry, key type) is bound in as additional authenticated data, so changing the expiry breaks decryption. Without the extra: plain text, with a one-time note saying so. |
+| Vault key, keyring mode (default with the extra) | Your OS keyring, through `secret-tool` (libsecret) | A random 32-byte key, created on first use. It is passed to and from `secret-tool` over stdin/stdout, never on the command line. |
+| Vault key, password mode | Not stored | Derived from your password with scrypt (n=2^17, r=8, p=1) and a fresh random 16-byte salt on every write. `--password` asks on the terminal (twice for a new vault); `PROMPTVEIL_PASSWORD` is the non-interactive option. |
+| Expiry | In the vault file | Every `scrub` sets an expiry: `--ttl`, or `ttl` under `[vault]` in `~/.config/promptveil/config.ini`, else 24 hours. An expired vault is deleted the next time `promptveil` runs. |
+| Word lists | `~/.config/promptveil/terms.txt`, `allow.txt` | Plain-text files you manage yourself. |
+
+With the extra installed but no keyring and no password, `promptveil scrub` stops with an error and prints nothing,
+rather than writing the vault in plain text or handing out text that could never be restored.
+
+- `PROMPTVEIL_PASSWORD` can be read by other processes running as you (`/proc/<pid>/environ`) and ends up in
+  shell history if you type it inline. Prefer `--password` when you're at a terminal.
+- `promptveil forget` and expiry delete the file normally. On SSDs and journaling file systems the old bytes can
+  stay on disk until they're overwritten, which is one more reason to use the encrypted mode.
+- `promptveil show` masks values unless you pass `--reveal`.
 
 ## Trust boundaries in the extension
 
