@@ -7,6 +7,10 @@
   const lines = s => s.split("\n").map(x => x.trim()).filter(Boolean);
   const SUPPORTED = (chrome.runtime.getManifest().host_permissions || []).map(p => new URL(p.replace("/*", "/")).hostname);
   if (params.get("window")) document.body.classList.add("window");
+  chrome.commands.getAll().then(cmds => {
+    const c = cmds.find(x => x.name === "restore-selection");
+    if (c && c.shortcut) $("shortcut").textContent = c.shortcut; else $("shortcut").textContent = "your shortcut (set one at chrome://extensions/shortcuts)";
+  }).catch(() => {});
 
   // ---------------------------------------------------------------- tabs
   function show(name) {

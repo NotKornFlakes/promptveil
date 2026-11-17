@@ -274,6 +274,26 @@ with sync_playwright() as p, tempfile.TemporaryDirectory() as prof:
           sw.evaluate(MENU, ["pv-restore", "no placeholders here"]) == {"count": 0, "reason": "none"}
           and clipboard(pg3) == "ping 192.168.10.25")
 
+    # 12. Keyboard shortcut. Key presses sent through CDP never reach Chrome's extension-shortcut
+    # handling (onCommand doesn't fire in this setup), so this checks that Chrome registered the
+    # shortcut, then calls onCommand, the function the onCommand listener runs.
+    cmds = sw.evaluate("chrome.commands.getAll()")
+    sc = next((c.get("shortcut") for c in cmds if c["name"] == "restore-selection"), None)
+    check("shortcut: registered as Ctrl+Shift+Y", sc == "Ctrl+Shift+Y", cmds)
+    pa.evaluate("""() => { const r = document.createRange(); r.selectNodeContents(document.getElementById('u1'));
+        getSelection().removeAllRanges(); getSelection().addRange(r); }""")
+    pg3.evaluate("t => navigator.clipboard.writeText(t)", "sentinel")
+    pa.bring_to_front()
+    r = sw.evaluate("async () => onCommand('restore-selection', (await chrome.tabs.query({active: true, lastFocusedWindow: true}))[0])")
+    check("shortcut: restores the selection", r == {"count": 1}, r)
+    got = clipboard(pg3)
+    check("shortcut: clipboard holds the restored selection", got == "My question about Marcus Bell", repr(got))
+    r = sw.evaluate("async () => onCommand('restore-selection')")  # no tab given: uses the active tab (example.com now)
+    badge = sw.evaluate("""async () => { const [t] = await chrome.tabs.query({active: true, lastFocusedWindow: true});
+        return chrome.action.getBadgeText({tabId: t.id}); }""")
+    check("shortcut on other sites: says it can't read the selection, copies nothing",
+          r == {"count": 0, "reason": "noaccess"} and badge == "!" and clipboard(pg3) == "My question about Marcus Bell", [r, badge])
+
     # Last, because it empties the vault: starting a new session removes the buttons.
     pop.click("nav button[data-tab=vault]"); pop.click("#reset"); pa.wait_for_timeout(1500)
     check("button: removed when the vault is reset", pa.locator("promptveil-copy").count() == 0,

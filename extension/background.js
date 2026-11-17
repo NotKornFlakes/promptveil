@@ -165,20 +165,20 @@ chrome.runtime.onInstalled.addListener(async () => {
 });
 
 // Read the selection with line breaks (selectionText collapses them). Only works on the AI
-// sites (our host permissions); anywhere else we fall back to what Chrome gave us.
-async function readSelection(tab, frameIds, fallback) {
-  if (tab && tab.id >= 0) {
-    try {
-      const results = await chrome.scripting.executeScript({
-        target: frameIds ? { tabId: tab.id, frameIds } : { tabId: tab.id, allFrames: true },
-        func: () => ({ text: String(getSelection()), focused: document.hasFocus() }),
-      });
-      const found = results.map(r => r && r.result).filter(r => r && r.text);
-      const pick = found.find(r => r.focused) || found[0];
-      if (pick) return pick.text;
-    } catch (_) { /* page not scriptable */ }
+// sites (our host permissions). Returns null when the page can't be read.
+async function readSelection(tab, frameIds) {
+  if (!tab || tab.id < 0) return null;
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: frameIds ? { tabId: tab.id, frameIds } : { tabId: tab.id, allFrames: true },
+      func: () => ({ text: String(getSelection()), focused: document.hasFocus() }),
+    });
+    const found = results.map(r => r && r.result).filter(r => r && r.text);
+    const pick = found.find(r => r.focused) || found[0];
+    return pick ? pick.text : "";
+  } catch (_) {
+    return null; // not an AI site, or a page Chrome doesn't let extensions script
   }
-  return fallback || "";
 }
 
 // What to tell the user. Never includes the text itself.
@@ -187,6 +187,7 @@ function feedback(r) {
   switch (r.reason) {
     case undefined: return { title: `Copied with ${r.count} real value${s(r.count)} restored`, detail: "Paste it wherever you need it. The page never saw them." };
     case "noselection": return { title: "Nothing selected", detail: "Select the AI's answer first.", bad: true };
+    case "noaccess": return { title: "Can't read the selection here", detail: "The shortcut works on the AI chat sites. Elsewhere, right-click → Restore real values.", bad: true };
     case "toolong": return { title: "Selection too long", detail: "Select a shorter part of the answer.", bad: true };
     case "empty": return { title: "Nothing to restore", detail: "The vault is empty. It's cleared when the browser closes or you start a new session.", bad: true };
     case "none": return { title: "Nothing to restore", detail: "The selection has no placeholders PromptVeil knows.", bad: true };
@@ -207,13 +208,18 @@ async function notify(tab, r) {
   const text = f.bad ? "!" : r.count > 99 ? "99+" : String(r.count);
   await chrome.action.setBadgeBackgroundColor({ color: f.bad ? "#d1242f" : "#0f9d74", tabId });
   await chrome.action.setBadgeText({ text, tabId });
+  await chrome.action.setTitle({ title: `PromptVeil: ${f.title}`, tabId });
   clearTimeout(badgeTimers.get(tabId));
-  badgeTimers.set(tabId, setTimeout(() => chrome.action.setBadgeText({ text: "", tabId }).catch(() => {}), 4000));
+  badgeTimers.set(tabId, setTimeout(() => {
+    chrome.action.setBadgeText({ text: "", tabId }).catch(() => {});
+    chrome.action.setTitle({ title: "PromptVeil", tabId }).catch(() => {});
+  }, 4000));
 }
 
 async function copySelection(tab, text) {
   let r;
-  if (!text) r = { count: 0, reason: "noselection" };
+  if (text === null) r = { count: 0, reason: "noaccess" };
+  else if (!text) r = { count: 0, reason: "noselection" };
   else if (text.length > MAX_TEXT) r = { count: 0, reason: "toolong" };
   else {
     try { r = await restoreToClipboard(text); } catch (_) { r = { count: 0, reason: "error" }; }
@@ -224,10 +230,20 @@ async function copySelection(tab, text) {
 
 async function onMenuClick(info, tab) {
   if (info.menuItemId !== MENU_COPY && info.menuItemId !== MENU_VIEW) return;
-  const text = await readSelection(tab, [info.frameId || 0], info.selectionText);
+  // Outside the AI sites, fall back to Chrome's selectionText (line breaks collapsed).
+  let text = await readSelection(tab, [info.frameId || 0]);
+  if (!text) text = info.selectionText || "";
   if (info.menuItemId === MENU_COPY) return copySelection(tab, text);
   // "Restore and view…": the restore window shows the result before you copy it.
   await chrome.storage.session.set({ pendingRestore: text });
   await chrome.windows.create({ url: "popup.html?view=restore&window=1", type: "popup", width: 440, height: 640 });
 }
 chrome.contextMenus.onClicked.addListener(onMenuClick);
+
+// Keyboard shortcut (Ctrl+Shift+Y / Cmd+Shift+Y by default): same as the right-click item.
+async function onCommand(command, tab) {
+  if (command !== "restore-selection") return;
+  if (!tab) [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  return copySelection(tab, await readSelection(tab, null));
+}
+chrome.commands.onCommand.addListener(onCommand);

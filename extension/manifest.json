@@ -40,6 +40,12 @@
       "run_at": "document_start"
     }
   ],
+  "commands": {
+    "restore-selection": {
+      "suggested_key": { "default": "Ctrl+Shift+Y", "mac": "Command+Shift+Y" },
+      "description": "Restore real values in the selection and copy them"
+    }
+  },
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'none'; connect-src 'none'"
   }
