@@ -152,7 +152,7 @@ with sync_playwright() as p, tempfile.TemporaryDirectory() as prof:
         scrubbed, restored = wp.inner_text("#demoScrubbed"), wp.inner_text("#demoRestored")
         check("welcome demo: scrubs the sample",
               all(x in scrubbed for x in ["[EMAIL_1]", "[PHONE_1]", "[HOST_1]", "[IP_1]", "[CARD_1]", "[API_KEY_1]"])
-              and "dana.reyes@example.com" not in scrubbed, scrubbed)
+              and not any(x in scrubbed for x in ["dana.reyes@example.com", "10.0.4.12", "415-555-0134"]), scrubbed)
         check("welcome demo: restores the drafted answer",
               "dana.reyes@example.com" in restored and "10.0.4.12" in restored and "[" not in restored, restored)
         wp.fill("#demoAnswer", "Email EMAIL_1 about [HOST_1]."); wp.dispatch_event("#demoAnswer", "input")
