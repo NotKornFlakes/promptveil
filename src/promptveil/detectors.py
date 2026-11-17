@@ -76,9 +76,9 @@ DETECTORS: list[Detector] = [
     Detector("CARD", re.compile(r"\b(?:\d[ -]?){12,18}\d\b"), 65, validator=luhn_ok, label="Payment card number"),
     Detector("SSN", re.compile(r"\b\d{3}-\d{2}-\d{4}\b"), 65, validator=ssn_ok, label="US Social Security number"),
     Detector("PHONE", re.compile(
-        r"(?<![\w.])(?:\+?1[ .-]?)?\(?\d{3}\)?[ .-]\d{3}[ .-]\d{4}(?![\w.])"), 55, label="Phone number"),
+        r"(?<![\w.])(?:\+?1[ .-]?)?\(?\d{3}\)?[ .-]\d{3}[ .-]\d{4}(?!\w|\.\d)"), 55, label="Phone number"),
     # --- Network identifiers -----------------------------------------------------
-    Detector("IP", re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])"), 60, validator=ipv4_ok, label="IPv4 address"),
+    Detector("IP", re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?!\w|\.\d)"), 60, validator=ipv4_ok, label="IPv4 address"),
     Detector("IPV6", re.compile(r"(?<![\w:])(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}(?![\w:])"), 60, label="IPv6 address"),
     Detector("MAC", re.compile(r"\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b"), 60, label="MAC address"),
     Detector("HOST", re.compile(
