@@ -29,8 +29,14 @@ document.getElementById('ed').addEventListener('paste', e => {
 </script></body></html>"""
 
 def page_paste(pg, selector, text):
-    """Dispatch a paste event from the *page* world, like a browser paste does."""
-    pg.focus(selector)
+    """Paste like a user does: put the text on the clipboard, then press Ctrl+V in the field."""
+    pg.bring_to_front()
+    pg.evaluate("t => navigator.clipboard.writeText(t)", text)
+    pg.focus(selector); pg.keyboard.press("Control+V")
+    pg.wait_for_timeout(400)
+
+def synthetic_paste(pg, selector, text):
+    """A paste event made up by the page's own script (isTrusted false). PromptVeil must ignore it."""
     pg.evaluate("""([sel, text]) => { const dt = new DataTransfer(); dt.setData('text/plain', text);
         document.querySelector(sel).dispatchEvent(new ClipboardEvent('paste', {clipboardData: dt, bubbles: true, cancelable: true})); }""",
         [selector, text])
@@ -48,6 +54,8 @@ with sync_playwright() as p, tempfile.TemporaryDirectory() as prof:
     ctx.route("https://chatgpt.com/**", lambda r: r.fulfill(body=TEXTAREA_PAGE, content_type="text/html"))
     ctx.route("https://claude.ai/**", lambda r: r.fulfill(body=RICH_PAGE, content_type="text/html"))
     ctx.route("https://example.com/**", lambda r: r.fulfill(body=TEXTAREA_PAGE, content_type="text/html"))
+    for origin in ["https://chatgpt.com", "https://claude.ai", "https://example.com"]:
+        ctx.grant_permissions(["clipboard-read", "clipboard-write"], origin=origin)
     sw = ctx.service_workers[0] if ctx.service_workers else ctx.wait_for_event("serviceworker")
     ext_id = sw.url.split("/")[2]
     sw.evaluate("chrome.storage.local.set({terms: ['Marcus Bell', 'Riverside Dental']})")
@@ -75,6 +83,19 @@ with sync_playwright() as p, tempfile.TemporaryDirectory() as prof:
     check("same value -> same placeholder across pastes", "cc [EMAIL_1] and [IP_2]" in txt, txt)
     pg2.screenshot(path=str(SHOTS / "ext_rich.png"))
 
+    # 3b. The page can't use its own (synthetic) paste events to probe the vault for known values:
+    # known values reuse their placeholder, so the returned placeholder would reveal what's in it.
+    vault_before = sw.evaluate("chrome.storage.session.get('mapping')")["mapping"]
+    pg2.evaluate("() => { document.getElementById('ed').textContent = ''; window.seen = []; }")
+    probe = "is marcus.bell@riversidedental.com known? and new.person@example.org"
+    synthetic_paste(pg2, "#ed", probe)
+    # PromptVeil must not touch the page's own event: the vault is unchanged, and the page's paste
+    # handler gets back exactly what it sent, with no placeholder in it.
+    check("synthetic paste events from the page are ignored (no vault probing)",
+          sw.evaluate("chrome.storage.session.get('mapping')")["mapping"] == vault_before
+          and pg2.evaluate("window.seen") == [probe] and "[EMAIL_" not in pg2.inner_text("#ed"),
+          [pg2.inner_text("#ed"), pg2.evaluate("window.seen")])
+
     # 4. real keyboard paste (Ctrl+V) from the system clipboard
     ctx.grant_permissions(["clipboard-read", "clipboard-write"], origin="https://chatgpt.com")
     pg.fill("#box", "")
@@ -86,13 +107,13 @@ with sync_playwright() as p, tempfile.TemporaryDirectory() as prof:
     # 5. sites outside the list are untouched
     pg3 = ctx.new_page(); pg3.goto("https://example.com/"); pg3.wait_for_timeout(300)
     page_paste(pg3, "#box", "bob@x.io")
-    check("non-AI site untouched", pg3.input_value("#box") == "", pg3.input_value("#box"))
+    check("non-AI site untouched (paste goes through as is)", pg3.input_value("#box") == "bob@x.io", pg3.input_value("#box"))
 
     # 6. per-site off switch
     sw.evaluate("chrome.storage.local.set({disabledSites: ['chatgpt.com']})"); pg.wait_for_timeout(200)
     pg.fill("#box", "")
     page_paste(pg, "#box", "raw@x.io")
-    check("disabled site: content script stands down", pg.input_value("#box") == "", pg.input_value("#box"))
+    check("disabled site: content script stands down (paste goes through as is)", pg.input_value("#box") == "raw@x.io", pg.input_value("#box"))
     sw.evaluate("chrome.storage.local.set({disabledSites: []})")
 
     # 7. vault lives in session storage (memory), not local storage (disk)

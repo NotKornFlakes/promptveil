@@ -52,7 +52,10 @@
   }
 
   function onPaste(e) {
-    if (!enabled || ours.has(e)) return;
+    // Only real pastes by the user. A page could otherwise dispatch its own paste events with
+    // guessed values and watch which placeholder comes back (placeholders are reused for known
+    // values), learning what's in the vault. A synthetic paste inserts nothing by itself.
+    if (!enabled || ours.has(e) || !e.isTrusted) return;
     const target = editableFrom(e.target);
     if (!target || !e.clipboardData) return;
     if (e.clipboardData.files && e.clipboardData.files.length) return; // images/files: leave alone
