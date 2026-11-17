@@ -31,6 +31,20 @@
     }
   }
   const mask = v => { v = v.replace(/\n/g, " "); return v.length <= 4 ? "•".repeat(v.length) : v.slice(0, 2) + "•".repeat(Math.min(v.length - 4, 10)) + v.slice(-2); };
+
+  // Real values are hidden by default. A reveal lasts 30 s after the last interaction, and ends
+  // anyway when the popup closes (the page is destroyed).
+  const REVEAL_MS = 30000;
+  function revealer(onShow, onHide) {
+    let timer = 0, shown = false;
+    const r = {
+      get shown() { return shown; },
+      show() { shown = true; onShow(); r.bump(); },
+      hide() { clearTimeout(timer); if (!shown) return; shown = false; return onHide(); },
+      bump() { if (!shown) return; clearTimeout(timer); timer = setTimeout(() => r.hide(), REVEAL_MS); },
+    };
+    return r;
+  }
   async function copy(text, btn) {
     if (!text) return;
     try { await navigator.clipboard.writeText(text); } catch { return; }
@@ -47,7 +61,7 @@
   else if (supported) {
     const on = !disabledSites.includes(host);
     $("siteSwitch").checked = on;
-    const label = () => { $("siteTxt").innerHTML = ""; const b = document.createElement("b"); b.textContent = host;
+    const label = () => { $("siteTxt").replaceChildren(); const b = document.createElement("b"); b.textContent = host;
       $("siteTxt").append(b, $("siteSwitch").checked ? "Pastes are scrubbed automatically" : "Off: pastes go through unchanged"); };
     label();
     $("siteSwitch").addEventListener("change", async () => {
@@ -75,7 +89,11 @@
       : "Vault is empty. Paste into an AI chat first.";
   }
   $("restoreIn").addEventListener("input", doRestore);
-  $("restoreCopy").addEventListener("click", e => copy(restored, e.currentTarget));
+  $("restoreCopy").addEventListener("click", e => copy(restored, e.currentTarget)); // works while blurred
+  const restoreReveal = revealer(
+    () => { $("restoreOut").classList.remove("veiled"); $("restoreShow").textContent = "Hide"; },
+    () => { $("restoreOut").classList.add("veiled"); $("restoreShow").textContent = "Show"; });
+  $("restoreShow").addEventListener("click", () => (restoreReveal.shown ? restoreReveal.hide() : restoreReveal.show()));
 
   // ---------------------------------------------------------------- scrub (manual)
   let scrubbed = "";
@@ -94,10 +112,25 @@
     const { mapping } = await send({ type: "vault" });
     const tb = $("vault").tBodies[0]; tb.textContent = "";
     const entries = Object.entries(mapping);
-    if (!entries.length) { const td = tb.insertRow().insertCell(); td.colSpan = 2; td.style.color = "var(--mute)"; td.textContent = "Empty. Nothing has been hidden yet."; return; }
-    for (const [ph, v] of entries) { const tr = tb.insertRow(); tr.insertCell().textContent = ph; tr.insertCell().textContent = $("reveal").checked ? v : mask(v); }
+    if (!entries.length) { const td = tb.insertRow().insertCell(); td.colSpan = 3; td.style.color = "var(--mute)"; td.textContent = "Empty. Nothing has been hidden yet."; return; }
+    for (const [ph, v] of entries) {
+      const tr = tb.insertRow();
+      tr.insertCell().textContent = ph;
+      const cell = tr.insertCell();
+      cell.textContent = mask(v);
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "eye";
+      btn.textContent = "Show";
+      btn.setAttribute("aria-label", `Show the value of ${ph}`);
+      const r = revealer(() => { cell.textContent = v; btn.textContent = "Hide"; },
+                         () => { cell.textContent = mask(v); btn.textContent = "Show"; });
+      btn.addEventListener("click", () => (r.shown ? r.hide() : r.show()));
+      const act = tr.insertCell();
+      act.className = "act";
+      act.appendChild(btn);
+    }
   }
-  $("reveal").addEventListener("change", drawVault);
   $("reset").addEventListener("click", async () => { await send({ type: "reset" }); drawVault(); doRestore(); });
 
   // ---------------------------------------------------------------- settings
@@ -107,42 +140,71 @@
   $("guardTyped").addEventListener("change", () => chrome.storage.local.set({ guardTyped: $("guardTyped").checked }));
   $("more").addEventListener("click", e => { e.preventDefault(); chrome.runtime.openOptionsPage(); });
 
+  // The lists are shown as a count plus dots. Their entries are only put into the page while
+  // revealed, and taken out again when hidden.
+  const summary = n => (n ? `${n} ${n === 1 ? "entry" : "entries"}  ${"•".repeat(Math.min(12, 4 + n))}` : "Empty");
+  let counts = { terms: 0, allow: 0 };
+  function drawMasks() {
+    $("termsMask").textContent = summary(counts.terms);
+    $("allowMask").textContent = summary(counts.allow);
+  }
+
   async function loadLists() {
     const st = await send({ type: "lists.get" });
     const usable = !st.locked && !st.broken;
     $("lockBanner").hidden = !st.locked;
     $("lockedBox").hidden = usable;
     $("listsBox").hidden = !usable;
+    $("listsToggle").hidden = !usable;
     $("lockNow").hidden = !(usable && st.mode === "password");
     $("unlockForm").hidden = !st.locked;
     if (st.broken) {
       $("lockedTitle").textContent = "Your custom lists can't be decrypted";
       $("lockedText").textContent = "Their key is gone (browser data was cleared). Pastes are still scrubbed with the built-in rules. Delete the lists under Password & backup to start over.";
     }
-    if (usable) {
-      $("terms").value = st.terms.join("\n");
-      $("allow").value = st.allow.join("\n");
-    }
+    if (usable) counts = { terms: st.terms.length, allow: st.allow.length };
+    drawMasks();
     return st;
   }
   await loadLists();
   $("lockBanner").addEventListener("click", () => { show("settings"); $("unlockPw").focus(); });
 
-  let t;
-  function save() {
+  let t = 0, pending = null;
+  function saveNow() {
     clearTimeout(t);
-    t = setTimeout(async () => {
-      try {
-        await send({ type: "lists.set", terms: lines($("terms").value), allow: lines($("allow").value) });
-        $("saved").textContent = "Saved (encrypted)";
-      } catch (e) {
-        $("saved").textContent = e.message === "locked" ? "Locked: not saved" : "Not saved";
-      }
-      setTimeout(() => $("saved").textContent = "", 1500);
-    }, 300);
+    t = 0;
+    const terms = lines($("terms").value), allow = lines($("allow").value);
+    counts = { terms: terms.length, allow: allow.length };
+    pending = send({ type: "lists.set", terms, allow }).then(() => {
+      $("saved").textContent = "Saved";
+    }, e => {
+      $("saved").textContent = e.message === "locked" ? "Locked: not saved" : "Not saved";
+    }).then(() => setTimeout(() => $("saved").textContent = "", 1500));
+    return pending;
   }
-  $("terms").addEventListener("input", save);
-  $("allow").addEventListener("input", save);
+  function save() {
+    listsReveal.bump();
+    clearTimeout(t);
+    t = setTimeout(saveNow, 300);
+  }
+  const listsReveal = revealer(async () => {
+    const st = await send({ type: "lists.get" });
+    if (!st.terms) return loadLists();
+    $("terms").value = st.terms.join("\n");
+    $("allow").value = st.allow.join("\n");
+    for (const id of ["terms", "allow"]) { $(id).hidden = false; $(id + "Mask").hidden = true; }
+    $("listsToggle").textContent = "Hide";
+  }, async () => {
+    if (t) await saveNow(); // keep edits made just before hiding
+    for (const id of ["terms", "allow"]) { $(id).value = ""; $(id).hidden = true; $(id + "Mask").hidden = false; }
+    $("listsToggle").textContent = "Show and edit";
+    drawMasks();
+  });
+  $("listsToggle").addEventListener("click", () => (listsReveal.shown ? listsReveal.hide() : listsReveal.show()));
+  for (const id of ["terms", "allow"]) {
+    $(id).addEventListener("input", save);
+    $(id).addEventListener("focus", () => listsReveal.bump());
+  }
 
   $("unlockForm").addEventListener("submit", async e => {
     e.preventDefault();
@@ -157,6 +219,7 @@
     loadLists();
   });
   $("lockNow").addEventListener("click", async () => {
+    await listsReveal.hide();
     await send({ type: "lock.lock" });
     loadLists();
   });

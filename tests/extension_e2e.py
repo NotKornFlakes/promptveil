@@ -132,6 +132,10 @@ with sync_playwright() as p, tempfile.TemporaryDirectory() as prof:
     ctx = p.chromium.launch_persistent_context(prof, executable_path=CHROME, headless=False,
         args=["--headless=new", f"--disable-extensions-except={EXT}", f"--load-extension={EXT}"],
         viewport={"width": 1100, "height": 700})
+    # Everything any page, content script or the service worker logs, plus uncaught errors.
+    logs = []
+    ctx.on("console", lambda m: logs.append(m.text))
+    ctx.on("weberror", lambda e: logs.append(str(e.error)))
     ctx.route("https://chatgpt.com/**", lambda r: r.fulfill(
         body=ANSWERS_PAGE if "/c/answers" in r.request.url else COMPOSE_PAGE if "/c/compose" in r.request.url
         else TEXTAREA_PAGE, content_type="text/html"))
@@ -139,6 +143,11 @@ with sync_playwright() as p, tempfile.TemporaryDirectory() as prof:
     ctx.route("https://example.com/**", lambda r: r.fulfill(body=TEXTAREA_PAGE, content_type="text/html"))
     sw = ctx.service_workers[0] if ctx.service_workers else ctx.wait_for_event("serviceworker")
     ext_id = sw.url.split("/")[2]
+    sw.evaluate("""() => { self.__logs = [];
+        for (const k of ['log', 'info', 'warn', 'error', 'debug']) {
+          const orig = console[k]; console[k] = (...a) => { self.__logs.push(a.map(String).join(' ')); orig.apply(console, a); }; }
+        self.addEventListener('error', e => self.__logs.push(String(e.message)));
+        self.addEventListener('unhandledrejection', e => self.__logs.push(String(e.reason && (e.reason.stack || e.reason)))); }""")
 
     # 0. Welcome page: opened once on install, with a demo that never touches the real vault.
     for _ in range(30):
@@ -477,8 +486,8 @@ with sync_playwright() as p, tempfile.TemporaryDirectory() as prof:
           pop.inner_text("#unlockMsg") == "Wrong password." and "listKey" not in session(), pop.inner_text("#unlockMsg"))
     pop.fill("#unlockPw", PW); pop.click("#unlockGo")
     pop.wait_for_function("() => !document.getElementById('listsBox').hidden", timeout=10000)
-    check("unlock: right password unlocks and shows the lists",
-          pop.input_value("#terms") == "Marcus Bell\nRiverside Dental" and pop.is_hidden("#lockBanner"), pop.input_value("#terms"))
+    check("unlock: right password unlocks the lists",
+          pop.inner_text("#termsMask").startswith("2 entries") and pop.is_hidden("#lockBanner"), pop.inner_text("#termsMask"))
     pg.fill("#box", ""); page_paste(pg, "#box", "Marcus Bell at marcus.bell@riversidedental.com")
     check("unlocked: custom terms apply again", pg.input_value("#box") == "[TERM_2] at [EMAIL_1]", pg.input_value("#box"))
 
@@ -547,6 +556,51 @@ with sync_playwright() as p, tempfile.TemporaryDirectory() as prof:
           idle_never_ok and sw.evaluate("listState()")["locked"] is True)
     sw.evaluate(f"unlock({json.dumps(PW)})")
 
+    # 16. Real values hidden on screen by default (popup). Playwright's fake clock skips the 30 s timers.
+    pv = ctx.new_page(); pv.set_viewport_size({"width": 400, "height": 600})
+    pv.clock.install()
+    pv.goto(f"chrome-extension://{ext_id}/popup.html"); pv.wait_for_timeout(400)
+    blur = lambda: pv.evaluate("getComputedStyle(document.getElementById('restoreOut')).filter")
+    pv.fill("#restoreIn", ANSWER); pv.dispatch_event("#restoreIn", "input"); pv.wait_for_timeout(300)
+    check("restore view: restored output is blurred", "blur" in blur() and pv.inner_text("#restoreOut") == RESTORED, blur())
+    pv.screenshot(path=str(SHOTS / "ext_popup_blurred.png"))
+    pv.hover("#restoreOut"); pv.wait_for_timeout(200)
+    hovered = blur()
+    pv.mouse.move(5, 5); pv.wait_for_timeout(200)
+    check("restore view: hovering shows it, moving away blurs it again", hovered == "none" and "blur" in blur(), [hovered, blur()])
+    pv.click("#restoreShow"); pv.mouse.move(5, 5); pv.wait_for_timeout(200)
+    shown_ok = blur() == "none"
+    pv.clock.run_for(31000); pv.wait_for_timeout(200)
+    check("restore view: Show reveals it, and it blurs again after 30 s", shown_ok and "blur" in blur(), blur())
+    pg3.evaluate("t => navigator.clipboard.writeText(t)", "sentinel")
+    pv.bring_to_front(); pv.click("#restoreCopy"); pv.mouse.move(5, 5); pv.wait_for_timeout(400)
+    got = clipboard(pg3)
+    check("restore view: Copy works without revealing", got == RESTORED and "blur" in blur(), repr(got))
+
+    pv.bring_to_front(); pv.click("nav button[data-tab=vault]"); pv.wait_for_timeout(300)
+    vault_text = lambda: pv.inner_text("#vault")
+    check("vault tab: every value masked", not any(r in vault_text() for r in REAL), vault_text())
+    pv.locator("#vault tr", has_text="EMAIL_1").locator("button").click(); pv.wait_for_timeout(100)
+    check("vault tab: Show reveals only that row",
+          "marcus.bell@riversidedental.com" in vault_text() and sum(r in vault_text() for r in REAL) == 1, vault_text())
+    pv.clock.run_for(31000); pv.wait_for_timeout(200)
+    check("vault tab: the value is masked again after 30 s", not any(r in vault_text() for r in REAL), vault_text())
+
+    pv.click("nav button[data-tab=settings]"); pv.wait_for_timeout(300)
+    in_page = lambda: pv.evaluate("document.body.innerText + document.getElementById('terms').value + document.getElementById('allow').value")
+    check("settings: lists shown as a count plus dots, entries not in the page",
+          pv.inner_text("#termsMask").startswith("2 entries ••") and "Marcus" not in in_page(), pv.inner_text("#termsMask"))
+    pv.screenshot(path=str(SHOTS / "ext_popup_settings_masked.png"))
+    pv.click("#listsToggle"); pv.wait_for_timeout(400)
+    check("settings: Show and edit reveals the lists", pv.input_value("#terms") == "Marcus Bell\nRiverside Dental", pv.input_value("#terms"))
+    pv.fill("#allow", "support@example.com"); pv.wait_for_timeout(100)
+    pv.clock.run_for(31000); pv.wait_for_timeout(600)
+    check("settings: lists hide again after 30 s, entries taken out of the page, edits saved",
+          pv.is_hidden("#terms") and "Marcus" not in in_page() and pv.inner_text("#allowMask").startswith("1 entry")
+          and sw.evaluate("listState()")["lists"]["allow"] == ["support@example.com"], in_page())
+    sw.evaluate("saveLists({terms: ['Marcus Bell', 'Riverside Dental'], allow: []})")
+    pv.close()
+
     # Last, because it empties the vault: starting a new session removes the buttons.
     pop.click("nav button[data-tab=vault]"); pop.click("#reset"); pa.wait_for_timeout(1500)
     check("button: removed when the vault is reset", pa.locator("promptveil-copy").count() == 0,
@@ -562,6 +616,19 @@ with sync_playwright() as p, tempfile.TemporaryDirectory() as prof:
           vault_had and sw.evaluate("chrome.storage.session.get('mapping')")["mapping"] == {}
           and pa.locator("promptveil-copy").count() == 0 and sw.evaluate("listState()")["locked"] is True,
           [vault_had, pa.locator("promptveil-copy").count()])
+
+    # 17. No real value in console output, errors, the toolbar badge or tooltip, or page titles.
+    pg3.evaluate("console.log('probe-page')"); sw.evaluate("console.log('probe-sw')"); pg3.wait_for_timeout(200)
+    sw_logs = sw.evaluate("self.__logs")
+    everything = "\n".join(logs + sw_logs)
+    check("log capture works (probes seen)", "probe-page" in logs and "probe-sw" in sw_logs)
+    check("no real value in console output or errors (pages, content scripts, service worker)",
+          not any(r in everything for r in REAL), [r for r in REAL if r in everything])
+    badges = sw.evaluate("""async () => { const out = [];
+        for (const t of await chrome.tabs.query({})) out.push(await chrome.action.getBadgeText({tabId: t.id}), await chrome.action.getTitle({tabId: t.id}));
+        return out; }""")
+    titles = [x.title() for x in ctx.pages]
+    check("no real value in badges, tooltips or page titles", not any(r in "|".join(badges + titles) for r in REAL), badges + titles)
 
     ctx.close()
 
