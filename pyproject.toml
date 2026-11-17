@@ -17,11 +17,18 @@ classifiers = [
   "Environment :: Console",
 ]
 
+[project.optional-dependencies]
+# Encrypts the CLI vault (AES-256-GCM). The base install stays dependency-free.
+secure = ["cryptography>=42"]
+
 [project.scripts]
 promptveil = "promptveil.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+promptveil = ["builtin_allow.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

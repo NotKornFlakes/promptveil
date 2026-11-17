@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from promptveil import Veil
+from promptveil import Veil, vault
 from promptveil.cli import main
 
 SAMPLE = """Hi team, customer Jane Doe (jane.doe@acme.com, 555-867-5309) reported login failures.
@@ -115,6 +115,10 @@ def test_plain_text_untouched():
 def env(tmp_path, monkeypatch):
     monkeypatch.setenv("PROMPTVEIL_VAULT", str(tmp_path / "vault.json"))
     monkeypatch.setenv("PROMPTVEIL_CONFIG", str(tmp_path / "cfg"))
+    monkeypatch.delenv("PROMPTVEIL_PASSWORD", raising=False)
+    monkeypatch.setenv("PATH", str(tmp_path))  # never the real keyring
+    # These tests cover the plain-text vault (no secure extra); tests/test_vault.py covers encryption.
+    monkeypatch.setattr(vault, "have_crypto", lambda: False)
     return tmp_path
 
 

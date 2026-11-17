@@ -53,6 +53,18 @@
   label.check{display:flex;gap:8px;align-items:flex-start;margin:14px 0 0;font-size:12px;color:var(--mute);cursor:pointer}
   label.check input{margin:2px 0 0;accent-color:var(--accent)}
   label.check b{color:var(--ink);font-size:13px}
+  .locked{border:1px solid var(--line);border-left:4px solid var(--warn);border-radius:10px;background:var(--panel);padding:12px;margin-bottom:12px}
+  .locked b{display:block;font-size:13.5px}
+  .locked p{margin:2px 0 0;font-size:12px;color:var(--mute)}
+  .locked input{flex:1;min-width:0;background:var(--panel2);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:7px 9px;font:13px var(--sans)}
+  [hidden]{display:none !important}
+  .out.veiled:not(:empty){filter:blur(5px);transition:filter .12s}
+  .out.veiled:not(:empty):hover{filter:none}
+  .masked{background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:9px 10px;font:12.5px var(--mono);color:var(--mute)}
+  td.act{width:1%;padding-left:8px}
+  button.eye{font:600 11.5px var(--sans);border:1px solid var(--line);background:var(--panel);color:var(--mute);border-radius:6px;padding:2px 7px;cursor:pointer}
+  .lockbar{display:block;width:calc(100% - 32px);margin:0 16px 10px;text-align:left;font:600 12.5px var(--sans);color:var(--ink);
+    background:color-mix(in srgb,var(--warn) 16%,var(--panel));border:1px solid var(--line);border-radius:9px;padding:8px 12px;cursor:pointer}
 </style>
 </head>
 <body>
@@ -67,6 +79,8 @@
   <label class="switch" id="siteSwitchWrap" title="Auto-scrub pastes on this site"><input type="checkbox" id="siteSwitch"><span></span></label>
 </div>
 
+<button class="lockbar" id="lockBanner" type="button" hidden>🔒 Locked: unlock to use your custom terms</button>
+
 <nav role="tablist">
   <button role="tab" data-tab="restore" aria-selected="true">Restore</button>
   <button role="tab" data-tab="scrub" aria-selected="false">Scrub</button>
@@ -77,8 +91,10 @@
 <section id="tab-restore" class="on">
   <label for="restoreIn">Paste the AI's answer</label>
   <textarea id="restoreIn" spellcheck="false" placeholder="Hi [TERM_2], we'll fix [HOST_1] on Tuesday…"></textarea>
-  <div class="out" id="restoreOut" data-empty="Real values appear here, only inside PromptVeil."></div>
-  <div class="row"><span class="meta" id="restoreMeta"></span><span class="spacer"></span><button class="btn primary" id="restoreCopy">Copy</button></div>
+  <div class="out veiled" id="restoreOut" data-empty="Real values appear here, only inside PromptVeil."></div>
+  <div class="row"><span class="meta" id="restoreMeta"></span><span class="spacer"></span>
+    <button class="btn" id="restoreShow" type="button" aria-controls="restoreOut">Show</button>
+    <button class="btn primary" id="restoreCopy" type="button">Copy</button></div>
   <p class="note">Faster: click <b>Copy with real values</b> under an answer, or select text and right-click → <b>Restore real values with PromptVeil</b> (or press <b id="shortcut">Ctrl+Shift+Y</b>). All three copy straight to your clipboard.</p>
 </section>
 
@@ -92,18 +108,34 @@
 <section id="tab-vault">
   <div class="vault"><table id="vault"><tbody></tbody></table></div>
   <div class="row">
-    <label class="meta" style="margin:0"><input type="checkbox" id="reveal"> Reveal values</label><span class="spacer"></span>
+    <span class="meta">Values are hidden. Show one at a time for 30 seconds.</span><span class="spacer"></span>
     <button class="btn" id="reset">New session</button>
   </div>
   <p class="note">Kept in memory only. Never saved to disk, and erased when you close the browser. Start a new session when you start a new chat.</p>
 </section>
 
 <section id="tab-settings">
-  <label for="terms">Always hide: names, clients, codenames (one per line)</label>
-  <textarea id="terms" spellcheck="false" style="min-height:76px" placeholder="Marcus Bell&#10;Riverside Dental"></textarea>
-  <label for="allow" style="margin-top:12px">Never hide (allow-list)</label>
-  <textarea id="allow" spellcheck="false" style="min-height:56px" placeholder="support@mycompany.com"></textarea>
-  <div class="row"><span class="meta" id="saved"></span></div>
+  <div class="locked" id="lockedBox" hidden>
+    <b id="lockedTitle">Locked: unlock to use your custom terms</b>
+    <p id="lockedText">Pastes on the AI sites are blocked until you unlock.</p>
+    <form class="row" id="unlockForm">
+      <input type="password" id="unlockPw" placeholder="Password" autocomplete="current-password" aria-label="Password">
+      <button class="btn primary" id="unlockGo" type="submit">Unlock</button>
+    </form>
+    <span class="meta" id="unlockMsg" role="status"></span>
+  </div>
+  <div id="listsBox">
+    <label for="terms">Always hide: names, clients, codenames (one per line)</label>
+    <div class="masked" id="termsMask"></div>
+    <textarea id="terms" spellcheck="false" style="min-height:76px" placeholder="Marcus Bell&#10;Riverside Dental" hidden></textarea>
+    <label for="allow" style="margin-top:12px">Never hide (allow-list)</label>
+    <div class="masked" id="allowMask"></div>
+    <textarea id="allow" spellcheck="false" style="min-height:56px" placeholder="support@mycompany.com" hidden></textarea>
+  </div>
+  <div class="row"><button class="btn" id="listsToggle" type="button" aria-controls="listsBox">Show and edit</button>
+    <span class="meta" id="saved" role="status"></span><span class="spacer"></span>
+    <button class="btn" id="lockNow" type="button" hidden>Lock now</button>
+    <a class="help" id="more" href="options.html">Password &amp; backup…</a></div>
   <label class="check" for="guardTyped"><input type="checkbox" id="guardTyped"> <span><b>Check typed text before sending</b><br>
     When you press Enter or Send, PromptVeil stops the message once if it contains something sensitive and offers to hide it.
     The site can still see what you type as you type it; this only stops it from being sent.</span></label>

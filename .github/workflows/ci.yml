@@ -17,10 +17,10 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: "22"
-      - run: pip install -e . pytest
+      - run: pip install -e '.[secure]' pytest
       - run: pytest -q
-      - run: node --test tests/web_engine.test.mjs
-      - name: Extension engine is in sync with web page
+      - run: node --test tests/web_engine.test.mjs tests/extension_crypto.test.mjs
+      - name: Web page and extension engine are in sync with the shared files
         run: |
           python3 scripts/build_extension.py
-          git diff --exit-code extension/engine.js
+          git diff --exit-code web/index.html extension/engine.js
