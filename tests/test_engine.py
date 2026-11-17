@@ -1,6 +1,7 @@
 import json
 import os
 import stat
+from pathlib import Path
 
 import pytest
 
@@ -68,6 +69,19 @@ def test_restore_does_not_touch_longer_names():
 ])
 def test_false_positives_rejected(bad):
     assert Veil().find(bad) == []
+
+
+CASES = json.loads((Path(__file__).parent / "detector_cases.json").read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("case", CASES["hidden"], ids=lambda c: c["text"])
+def test_shared_cases_hidden(case):
+    assert [[f.kind, f.value] for f in Veil().find(case["text"])] == case["findings"]
+
+
+@pytest.mark.parametrize("text", CASES["kept"])
+def test_shared_cases_kept(text):
+    assert Veil().find(text) == []
 
 
 def test_custom_terms_and_allow_list():
