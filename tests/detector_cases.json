@@ -1,0 +1,14 @@
+{
+  "_comment": "Shared by tests/test_engine.py and tests/web_engine.test.mjs, so the Python and JS engines are held to the same expectations. 'hidden': each text must produce exactly these [kind, value] findings, in order. 'kept': texts that must produce no findings.",
+  "hidden": [
+    {"text": "at 10.0.4.12.", "findings": [["IP", "10.0.4.12"]]},
+    {"text": "call 555-123-4567.", "findings": [["PHONE", "555-123-4567"]]},
+    {"text": "(10.0.4.12)", "findings": [["IP", "10.0.4.12"]]},
+    {"text": "10.0.4.12, then", "findings": [["IP", "10.0.4.12"]]},
+    {"text": "v6 at 2001:0db8:85a3:0000:0000:8a2e:0370:7334.", "findings": [["IPV6", "2001:0db8:85a3:0000:0000:8a2e:0370:7334"]]}
+  ],
+  "kept": [
+    "1.2.3.4.5",
+    "v10.0.4.12.1"
+  ]
+}
