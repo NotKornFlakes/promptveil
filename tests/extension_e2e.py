@@ -1,7 +1,7 @@
 """End-to-end test: loads the unpacked extension in Chrome and pastes into stand-in AI chat pages.
 Run: python3 scripts/build_extension.py && python3 tests/extension_e2e.py  (needs playwright + Chrome for Testing)
 """
-import os, sys, tempfile
+import base64, json, os, sys, tempfile
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 
@@ -163,7 +163,13 @@ with sync_playwright() as p, tempfile.TemporaryDirectory() as prof:
               sw.evaluate("chrome.storage.session.get(null)"))
         wp.close()
 
-    sw.evaluate("chrome.storage.local.set({terms: ['Marcus Bell', 'Riverside Dental']})")
+    # Word lists as older versions stored them (plain text), then the migration that runs at startup.
+    sw.evaluate("chrome.storage.local.set({terms: ['Marcus Bell', 'Riverside Dental'], allow: []})")
+    sw.evaluate("migrateLists()")
+    local = sw.evaluate("chrome.storage.local.get(null)")
+    check("migration: plain-text lists encrypted, plain copy deleted",
+          "terms" not in local and "allow" not in local and local.get("lists", {}).get("mode") == "device"
+          and "Marcus" not in json.dumps(local), local)
 
     # 1. textarea (ChatGPT-style)
     pg = ctx.new_page(); pg.goto("https://chatgpt.com/c/test"); pg.wait_for_timeout(300)
@@ -212,7 +218,8 @@ with sync_playwright() as p, tempfile.TemporaryDirectory() as prof:
     local = sw.evaluate("chrome.storage.local.get(null)")
     sess = sw.evaluate("chrome.storage.session.get(null)")
     check("vault in session storage", "EMAIL_1" in sess.get("mapping", {}), sess)
-    check("no real values in local storage", "mapping" not in local and "Winter2026!" not in str(local), local)
+    check("no real values or list entries in local storage",
+          "mapping" not in local and not any(x in json.dumps(local) for x in REAL), local)
 
     # 8. popup restore
     pop = ctx.new_page(); pop.set_viewport_size({"width": 400, "height": 640})
@@ -424,6 +431,91 @@ with sync_playwright() as p, tempfile.TemporaryDirectory() as prof:
         r6 = in_cs("chrome.runtime.sendMessage({type:'scan', text:'mail marcus.bell@riversidedental.com'})")
         check("content script 'scan' gets counts only", isinstance(r6, dict) and r6.get("total") == 1 and "marcus" not in str(r6), r6)
     sw.evaluate("chrome.storage.local.set({guardTyped: false})")
+
+    # 14. Optional password lock for the word lists
+    PW, PW2 = "correct horse battery", "staple gun velvet"
+    lists = lambda: sw.evaluate("chrome.storage.local.get('lists')")["lists"]
+    session = lambda: sw.evaluate("chrome.storage.session.get(null)")
+    opt = ctx.new_page(); opt.goto(f"chrome-extension://{ext_id}/options.html"); opt.wait_for_timeout(300)
+    opt.on("dialog", lambda d: d.accept())
+    status_is = lambda pg, text: pg.wait_for_function(f"() => document.getElementById('lockStatus').textContent === {json.dumps(text)}", timeout=10000)
+    check("options: password lock is off by default", opt.inner_text("#lockStatus") == "Off", opt.inner_text("#lockStatus"))
+    opt.fill("#newPw", "short"); opt.fill("#newPw2", "short"); opt.click("#setGo"); opt.wait_for_timeout(300)
+    check("options: passwords under 8 characters refused", "at least 8" in opt.inner_text("#lockMsg") and lists()["mode"] == "device",
+          opt.inner_text("#lockMsg"))
+    opt.fill("#newPw", PW); opt.fill("#newPw2", PW); opt.click("#setGo"); status_is(opt, "On · unlocked")
+    l = lists()
+    check("password lock: lists re-encrypted with PBKDF2-SHA256, 600,000 iterations, 16-byte salt",
+          l["mode"] == "password" and l["kdf"]["name"] == "PBKDF2-SHA256" and l["kdf"]["iterations"] >= 600000
+          and len(base64.b64decode(l["kdf"]["salt"])) == 16 and len(base64.b64decode(l["iv"])) == 12, l)
+    check("password lock: the password is stored nowhere",
+          PW not in json.dumps(sw.evaluate("chrome.storage.local.get(null)")) + json.dumps(session()))
+    check("password lock: key kept in session memory while unlocked", "listKey" in session())
+    if iso:
+        r7 = in_cs("chrome.storage.session.get(null).then(() => 'readable', e => 'blocked')")
+        check("session storage (vault, key) is closed to content scripts", r7 == "blocked", r7)
+    iv_before = lists()["iv"]
+    sw.evaluate("saveLists({terms: ['Marcus Bell', 'Riverside Dental'], allow: []})")
+    check("password lock: fresh IV on every save", lists()["iv"] != iv_before)
+
+    opt.click("#lockNow"); status_is(opt, "On · locked")
+    check("lock: key forgotten", "listKey" not in session(), list(session()))
+    pop.reload(); pop.wait_for_timeout(400)
+    check("popup: shows 'Locked: unlock to use your custom terms'",
+          pop.is_visible("#lockBanner") and pop.inner_text("#lockBanner").endswith("Locked: unlock to use your custom terms"))
+    pop.screenshot(path=str(SHOTS / "ext_popup_locked.png"))
+    pg.bring_to_front(); pg.fill("#box", "")
+    page_paste(pg, "#box", "Marcus Bell at marcus.bell@riversidedental.com")
+    val = pg.input_value("#box")
+    check("locked: built-in detectors still scrub the paste", val.endswith(" at [EMAIL_1]"), val)
+    check("locked: custom terms not applied, and the toast says so",
+          val.startswith("Marcus Bell") and "custom terms locked" in shadow_text(pg), [val, shadow_text(pg)])
+
+    pop.bring_to_front(); pop.click("#lockBanner")
+    pop.fill("#unlockPw", "wrong password!"); pop.click("#unlockGo"); pop.wait_for_timeout(2500)
+    check("unlock: wrong password fails cleanly and stays locked",
+          pop.inner_text("#unlockMsg") == "Wrong password." and "listKey" not in session(), pop.inner_text("#unlockMsg"))
+    pop.fill("#unlockPw", PW); pop.click("#unlockGo")
+    pop.wait_for_function("() => !document.getElementById('listsBox').hidden", timeout=10000)
+    check("unlock: right password unlocks and shows the lists",
+          pop.input_value("#terms") == "Marcus Bell\nRiverside Dental" and pop.is_hidden("#lockBanner"), pop.input_value("#terms"))
+    pg.fill("#box", ""); page_paste(pg, "#box", "Marcus Bell at marcus.bell@riversidedental.com")
+    check("unlocked: custom terms apply again", pg.input_value("#box") == "[TERM_2] at [EMAIL_1]", pg.input_value("#box"))
+
+    opt.reload(); status_is(opt, "On · unlocked")
+    opt.fill("#newPw", PW2); opt.fill("#newPw2", PW2); opt.click("#setGo")
+    opt.wait_for_function("() => document.getElementById('lockMsg').textContent.includes('re-encrypted')", timeout=10000)
+    salt_changed = lists()["kdf"]["salt"] != l["kdf"]["salt"]
+    opt.click("#lockNow"); status_is(opt, "On · locked")
+    opt.fill("#unlockPw", PW); opt.click("#unlockForm button"); opt.wait_for_timeout(2500)
+    old_refused = opt.inner_text("#lockMsg") == "Wrong password."
+    opt.fill("#unlockPw", PW2); opt.click("#unlockForm button"); status_is(opt, "On · unlocked")
+    check("change password: re-encrypted with a new salt; old password refused, new one works", salt_changed and old_refused)
+
+    with opt.expect_download() as dl:
+        opt.fill("#expPw", "backup pass 1"); opt.fill("#expPw2", "backup pass 1"); opt.click("#exportForm button")
+    backup = Path(dl.value.path()).read_text()
+    check("backup: encrypted file downloaded", json.loads(backup)["format"] == "promptveil-lists-backup" and "Marcus" not in backup)
+    sw.evaluate("saveLists({terms: ['changed'], allow: []})")
+    opt.set_input_files("#impFile", dl.value.path()); opt.fill("#impPw", "not the password"); opt.click("#importForm button")
+    opt.wait_for_function("() => document.getElementById('backupMsg').textContent.startsWith('Wrong')", timeout=10000)
+    check("backup: wrong password fails cleanly", opt.inner_text("#backupMsg") == "Wrong password.", opt.inner_text("#backupMsg"))
+    opt.fill("#impPw", "backup pass 1"); opt.click("#importForm button")
+    opt.wait_for_function("() => document.getElementById('backupMsg').textContent.startsWith('Imported')", timeout=10000)
+    got = sw.evaluate("listState()")["lists"]
+    check("backup: import restores the lists", got["terms"] == ["Marcus Bell", "Riverside Dental"], got)
+
+    opt.click("#removePw"); status_is(opt, "Off")
+    check("remove password: back to the device key, session key dropped, lists intact",
+          lists()["mode"] == "device" and "listKey" not in session() and sw.evaluate("listState()")["lists"]["terms"] == ["Marcus Bell", "Riverside Dental"])
+
+    opt.fill("#newPw", PW); opt.fill("#newPw2", PW); opt.click("#setGo"); status_is(opt, "On · unlocked")
+    opt.click("#lockNow"); status_is(opt, "On · locked")
+    opt.click("#resetLists"); status_is(opt, "Off")
+    check("forgot password: lists deleted, lock off", "lists" not in sw.evaluate("chrome.storage.local.get(null)")
+          and sw.evaluate("listState()")["lists"] == {"terms": [], "allow": []})
+    opt.screenshot(path=str(SHOTS / "ext_options.png"), full_page=True)
+    sw.evaluate("saveLists({terms: ['Marcus Bell', 'Riverside Dental'], allow: []})")
 
     # Last, because it empties the vault: starting a new session removes the buttons.
     pop.click("nav button[data-tab=vault]"); pop.click("#reset"); pa.wait_for_timeout(1500)

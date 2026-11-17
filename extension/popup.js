@@ -101,22 +101,65 @@
   $("reset").addEventListener("click", async () => { await send({ type: "reset" }); drawVault(); doRestore(); });
 
   // ---------------------------------------------------------------- settings
-  const s = await chrome.storage.local.get({ terms: [], allow: [], guardTyped: false });
-  $("terms").value = s.terms.join("\n");
-  $("allow").value = s.allow.join("\n");
+  // The word lists are encrypted; only the service worker can read or write them.
+  const s = await chrome.storage.local.get({ guardTyped: false });
   $("guardTyped").checked = s.guardTyped === true;
   $("guardTyped").addEventListener("change", () => chrome.storage.local.set({ guardTyped: $("guardTyped").checked }));
+  $("more").addEventListener("click", e => { e.preventDefault(); chrome.runtime.openOptionsPage(); });
+
+  async function loadLists() {
+    const st = await send({ type: "lists.get" });
+    const usable = !st.locked && !st.broken;
+    $("lockBanner").hidden = !st.locked;
+    $("lockedBox").hidden = usable;
+    $("listsBox").hidden = !usable;
+    $("lockNow").hidden = !(usable && st.mode === "password");
+    $("unlockForm").hidden = !st.locked;
+    if (st.broken) {
+      $("lockedTitle").textContent = "Your custom lists can't be decrypted";
+      $("lockedText").textContent = "Their key is gone (browser data was cleared). Pastes are still scrubbed with the built-in rules. Delete the lists under Password & backup to start over.";
+    }
+    if (usable) {
+      $("terms").value = st.terms.join("\n");
+      $("allow").value = st.allow.join("\n");
+    }
+    return st;
+  }
+  await loadLists();
+  $("lockBanner").addEventListener("click", () => { show("settings"); $("unlockPw").focus(); });
+
   let t;
   function save() {
     clearTimeout(t);
     t = setTimeout(async () => {
-      await chrome.storage.local.set({ terms: lines($("terms").value), allow: lines($("allow").value) });
-      $("saved").textContent = "Saved";
-      setTimeout(() => $("saved").textContent = "", 1000);
+      try {
+        await send({ type: "lists.set", terms: lines($("terms").value), allow: lines($("allow").value) });
+        $("saved").textContent = "Saved (encrypted)";
+      } catch (e) {
+        $("saved").textContent = e.message === "locked" ? "Locked: not saved" : "Not saved";
+      }
+      setTimeout(() => $("saved").textContent = "", 1500);
     }, 300);
   }
   $("terms").addEventListener("input", save);
   $("allow").addEventListener("input", save);
+
+  $("unlockForm").addEventListener("submit", async e => {
+    e.preventDefault();
+    $("unlockMsg").textContent = "Unlocking…";
+    try {
+      await send({ type: "lock.unlock", password: $("unlockPw").value });
+      $("unlockMsg").textContent = "";
+    } catch (_) {
+      $("unlockMsg").textContent = "Wrong password.";
+    }
+    $("unlockPw").value = "";
+    loadLists();
+  });
+  $("lockNow").addEventListener("click", async () => {
+    await send({ type: "lock.lock" });
+    loadLists();
+  });
 
   // ---------------------------------------------------------------- opened from right-click menu
   if (params.get("view") === "restore") {

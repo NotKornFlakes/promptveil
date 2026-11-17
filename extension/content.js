@@ -120,7 +120,9 @@
     chrome.runtime.sendMessage({ type: "scrub", text }).then(r => {
       if (!r || r.error) throw new Error(r && r.error);
       insert(target, origin, r.text);
-      if (r.total) toast(`Hid ${r.total} item${r.total === 1 ? "" : "s"}`, r.counts.map(c => `${c.n} ${c.label}`).join(" · "));
+      const lockedNote = r.locked ? " · custom terms locked" : "";
+      if (r.total) toast(`Hid ${r.total} item${r.total === 1 ? "" : "s"}`, r.counts.map(c => `${c.n} ${c.label}`).join(" · ") + lockedNote);
+      else if (r.locked) toast("Nothing hidden", "Your custom terms are locked: open PromptVeil to unlock them.", true);
     }).catch(() => {
       toast("Paste blocked", "PromptVeil couldn't scrub this text. Reload the page, or turn PromptVeil off for this site.", true);
     });

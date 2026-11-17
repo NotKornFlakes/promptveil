@@ -1,20 +1,177 @@
 /* PromptVeil service worker.
  * Owns the vault (placeholder -> real value). The vault lives in chrome.storage.session:
  * memory only, never written to disk, wiped when the browser closes.
+ * Owns the word lists ("Always hide" / "Never hide"), stored encrypted in chrome.storage.local
+ * (see crypto.js). In password mode the derived key is kept only in chrome.storage.session while
+ * unlocked; while locked, scrubbing still works with the built-in detectors.
  * Content scripts may ask for scrubbing, a yes/no "does this text contain known placeholders?",
- * and "restore this and put it on the clipboard" (they get back a count, never the text).
- * Restored text only ever exists in extension contexts: this worker, the offscreen clipboard
- * document and PromptVeil's own pages. It is never put back into an AI site's page.
+ * a count-only scan of typed text, and "restore this and put it on the clipboard" (they get back
+ * a count, never the text). Restored text only ever exists in extension contexts: this worker,
+ * the offscreen clipboard document and PromptVeil's own pages. It is never put back into an AI
+ * site's page.
  */
-importScripts("engine.js");
+importScripts("engine.js", "crypto.js");
 const { Veil, LABELS } = self.PromptVeil;
+const C = self.PromptVeilCrypto;
 
-const DEFAULTS = { terms: [], allow: [], disabledSites: [], guardTyped: false };
+const DEFAULTS = { disabledSites: [], guardTyped: false };
 const MAX_TEXT = 1_000_000; // characters; bigger requests are refused
+const MIN_PASSWORD = 8;
 const AI_SITES = chrome.runtime.getManifest().content_scripts[0].matches;
 
+// --- startup ----------------------------------------------------------------------------
+// Session storage must be closed to content scripts before any key is written to it. It is by
+// default, but we set it explicitly and refuse to store a key until this has succeeded.
+let sessionRestricted = false;
+const ready = (async () => {
+  await chrome.storage.session.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" });
+  sessionRestricted = true;
+  await migrateLists().catch(() => {}); // retried on the next start or unlock
+})();
+
+// --- device key (IndexedDB) ---------------------------------------------------------------
+function idb(mode, fn) {
+  return new Promise((resolve, reject) => {
+    const open = indexedDB.open("promptveil", 1);
+    open.onupgradeneeded = () => open.result.createObjectStore("keys");
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const db = open.result;
+      const tx = db.transaction("keys", mode);
+      const req = fn(tx.objectStore("keys"));
+      tx.oncomplete = () => { db.close(); resolve(req.result); };
+      tx.onerror = tx.onabort = () => { db.close(); reject(tx.error); };
+    };
+  });
+}
+let deviceKeyPromise = null;
+function deviceKey() {
+  if (!deviceKeyPromise) {
+    deviceKeyPromise = (async () => {
+      let key = await idb("readonly", st => st.get("device"));
+      if (!key) {
+        key = await C.newDeviceKey(); // non-extractable
+        await idb("readwrite", st => st.put(key, "device"));
+      }
+      return key;
+    })();
+    deviceKeyPromise.catch(() => { deviceKeyPromise = null; });
+  }
+  return deviceKeyPromise;
+}
+
+// --- password key (chrome.storage.session, memory only) -----------------------------------
+async function sessionKey() {
+  const { listKey } = await chrome.storage.session.get("listKey");
+  return listKey ? C.keyFromBytes(C.unb64(listKey)) : null;
+}
+async function putSessionKey(bytes) {
+  if (!sessionRestricted) throw new Error("session storage is not restricted yet");
+  await chrome.storage.session.set({ listKey: C.b64(bytes) });
+}
+async function lock() {
+  await chrome.storage.session.remove("listKey");
+  listsCache = null;
+}
+
+// --- word lists ---------------------------------------------------------------------------
+let listsCache = null; // decrypted { terms, allow, ct } in this worker's memory only
+const sealedLists = async () => (await chrome.storage.local.get("lists")).lists || null;
+
+// { mode, locked, broken, lists }. lists is null when locked or undecryptable.
+async function listState() {
+  const sealed = await sealedLists();
+  if (!sealed) return { mode: "device", locked: false, broken: false, lists: { terms: [], allow: [] } };
+  if (listsCache && listsCache.ct === sealed.ct) return { mode: sealed.mode, locked: false, broken: false, lists: listsCache };
+  const key = sealed.mode === "password" ? await sessionKey() : await deviceKey();
+  if (!key) return { mode: sealed.mode, locked: true, broken: false, lists: null };
+  try {
+    listsCache = { ...(await C.openLists(key, sealed)), ct: sealed.ct };
+  } catch (_) {
+    // Device key gone (profile data cleared) or a stale session key: can't decrypt.
+    return { mode: sealed.mode, locked: sealed.mode === "password", broken: sealed.mode === "device", lists: null };
+  }
+  return { mode: sealed.mode, locked: false, broken: false, lists: listsCache };
+}
+
+async function saveLists(lists) {
+  const sealed = await sealedLists();
+  const mode = sealed ? sealed.mode : "device";
+  let key, kdf;
+  if (mode === "password") {
+    key = await sessionKey();
+    if (!key) throw new Error("locked");
+    kdf = { salt: C.unb64(sealed.kdf.salt), iterations: sealed.kdf.iterations };
+  } else {
+    key = await deviceKey();
+  }
+  const out = await C.sealLists(key, mode, lists, kdf); // fresh IV every save
+  await chrome.storage.local.set({ lists: out });
+  listsCache = { ...C.cleanLists(lists), ct: out.ct };
+}
+
+// Lists from older versions were plain text in chrome.storage.local ("terms" / "allow"). Encrypt
+// them and delete the plain copy. In password mode while locked this waits for the next unlock.
+async function migrateLists() {
+  const old = await chrome.storage.local.get(["terms", "allow"]);
+  if (old.terms === undefined && old.allow === undefined) return;
+  const st = await listState();
+  if (!st.lists) return;
+  const plain = C.cleanLists(old);
+  const union = (a, b) => [...new Set([...a, ...b])];
+  await saveLists({ terms: union(st.lists.terms, plain.terms), allow: union(st.lists.allow, plain.allow) });
+  await chrome.storage.local.remove(["terms", "allow"]);
+}
+
+async function setPassword(password) {
+  checkPassword(password);
+  const st = await listState();
+  if (!st.lists) throw new Error("locked");
+  const salt = C.random(16);
+  const bytes = await C.deriveKeyBytes(password, salt);
+  const out = await C.sealLists(await C.keyFromBytes(bytes), "password", st.lists, { salt, iterations: C.ITERATIONS });
+  await putSessionKey(bytes);
+  await chrome.storage.local.set({ lists: out });
+  listsCache = { ...st.lists, ct: out.ct };
+}
+
+async function removePassword() {
+  const st = await listState();
+  if (st.mode !== "password") return;
+  if (!st.lists) throw new Error("locked");
+  const out = await C.sealLists(await deviceKey(), "device", st.lists);
+  await chrome.storage.local.set({ lists: out });
+  await chrome.storage.session.remove("listKey");
+  listsCache = { ...st.lists, ct: out.ct };
+}
+
+async function unlock(password) {
+  const sealed = await sealedLists();
+  if (!sealed || sealed.mode !== "password") return;
+  if (typeof password !== "string" || !password || password.length > 1024) throw new Error("wrong password");
+  const bytes = await C.deriveKeyBytes(password, C.unb64(sealed.kdf.salt), sealed.kdf.iterations);
+  let lists;
+  try {
+    lists = await C.openLists(await C.keyFromBytes(bytes), sealed);
+  } catch (_) {
+    throw new Error("wrong password");
+  }
+  await putSessionKey(bytes);
+  listsCache = { ...lists, ct: sealed.ct };
+  await migrateLists().catch(() => {});
+}
+
+function checkPassword(password) {
+  if (typeof password !== "string" || password.length < MIN_PASSWORD) throw new Error(`password must be at least ${MIN_PASSWORD} characters`);
+  if (password.length > 1024) throw new Error("password too long");
+}
+
+// Scrubbing settings. While locked (or undecryptable) the custom lists are left out, so the
+// built-in detectors still run. The allow list is left out too, so more is hidden, never less.
 async function settings() {
-  return chrome.storage.local.get(DEFAULTS);
+  const plain = await chrome.storage.local.get(DEFAULTS);
+  const st = await listState();
+  return { ...plain, terms: st.lists ? st.lists.terms : [], allow: st.lists ? st.lists.allow : [], locked: !st.lists };
 }
 async function getMapping() {
   return (await chrome.storage.session.get({ mapping: {} })).mapping;
@@ -22,7 +179,7 @@ async function getMapping() {
 
 // Serialize vault writes so two quick pastes can't clobber each other's placeholders.
 let queue = Promise.resolve();
-function locked(fn) {
+function serial(fn) {
   const run = queue.then(fn, fn);
   queue = run.catch(() => {});
   return run;
@@ -42,6 +199,7 @@ function textOf(msg) {
   if (text.length > MAX_TEXT) throw new Error("text too large");
   return text;
 }
+const stringList = v => (Array.isArray(v) && v.length <= 5000 && v.every(x => typeof x === "string" && x.length <= 1000) ? v : null);
 
 // True only for PromptVeil's own pages (popup, restore window). Content scripts report the
 // AI site's URL here, so they can never pull real values out of the vault.
@@ -104,19 +262,20 @@ async function restoreToClipboard(text) {
 async function handle(msg, sender) {
   if (!msg || typeof msg !== "object" || typeof msg.type !== "string") throw new Error("bad message");
   if (sender.id !== chrome.runtime.id) throw new Error("not allowed");
+  await ready;
   switch (msg.type) {
     case "scrub": {
       const text = textOf(msg);
-      const r = await locked(async () => {
+      const r = await serial(async () => {
         const s = await settings();
         const before = await getMapping();
         const v = new Veil({ mapping: before, terms: s.terms, allow: s.allow });
         const out = v.scrub(text);
         await chrome.storage.session.set({ mapping: v.mapping });
-        return { out, grew: Object.keys(v.mapping).length > Object.keys(before).length };
+        return { out, locked: s.locked, grew: Object.keys(v.mapping).length > Object.keys(before).length };
       });
       if (r.grew) vaultChanged();
-      return { text: r.out.text, total: r.out.findings.length, counts: summarize(r.out.findings) };
+      return { text: r.out.text, total: r.out.findings.length, counts: summarize(r.out.findings), locked: r.locked };
     }
 
     case "scan": {
@@ -137,19 +296,65 @@ async function handle(msg, sender) {
     case "copyRestored":
       // The content script sends this only after a trusted click on its own button.
       return restoreToClipboard(textOf(msg));
+  }
 
+  // Everything below is for PromptVeil's own pages only.
+  if (!fromExtensionPage(sender)) throw new Error("not allowed");
+  switch (msg.type) {
     case "restore":
-      if (!fromExtensionPage(sender)) throw new Error("restore is only allowed from the PromptVeil popup");
       return new Veil({ mapping: await getMapping() }).restore(textOf(msg));
 
     case "vault":
-      if (!fromExtensionPage(sender)) throw new Error("not allowed");
       return { mapping: await getMapping() };
 
     case "reset":
-      if (!fromExtensionPage(sender)) throw new Error("not allowed");
       await chrome.storage.session.set({ mapping: {} });
       vaultChanged();
+      return { ok: true };
+
+    case "lists.get": {
+      const st = await listState();
+      return { mode: st.mode, locked: st.locked, broken: st.broken, terms: st.lists ? st.lists.terms : null, allow: st.lists ? st.lists.allow : null };
+    }
+    case "lists.set": {
+      const terms = stringList(msg.terms), allow = stringList(msg.allow);
+      if (!terms || !allow) throw new Error("bad lists");
+      await serial(() => saveLists({ terms, allow }));
+      return { ok: true };
+    }
+    case "lists.reset": // "Forgot password": delete the lists and start over without a password
+      await serial(async () => { await chrome.storage.local.remove(["lists", "terms", "allow"]); await lock(); });
+      return { ok: true };
+    case "lists.export": {
+      const st = await listState();
+      if (!st.lists) throw new Error("locked");
+      checkPassword(msg.password);
+      return { data: await C.exportBackup(st.lists, msg.password) };
+    }
+    case "lists.import": {
+      if (typeof msg.data !== "string" || msg.data.length > MAX_TEXT) throw new Error("not a PromptVeil backup");
+      if (typeof msg.password !== "string" || !msg.password) throw new Error("wrong password");
+      let lists;
+      try {
+        lists = await C.importBackup(msg.data, msg.password);
+      } catch (e) {
+        throw new Error(e.message === "wrong key" ? "wrong password" : "not a PromptVeil backup");
+      }
+      await serial(() => saveLists(lists));
+      return { terms: lists.terms.length, allow: lists.allow.length };
+    }
+
+    case "lock.unlock":
+      await serial(() => unlock(msg.password));
+      return { ok: true };
+    case "lock.lock":
+      await serial(lock);
+      return { ok: true };
+    case "lock.set": // turn the password on, or change it (needs the lists unlocked)
+      await serial(() => setPassword(msg.password));
+      return { ok: true };
+    case "lock.remove":
+      await serial(removePassword);
       return { ok: true };
 
     default:
@@ -159,7 +364,7 @@ async function handle(msg, sender) {
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg && msg.target === "offscreen") return false; // for the offscreen document, not us
-  handle(msg, sender).then(sendResponse, e => sendResponse({ error: String(e.message || e) }));
+  handle(msg, sender).then(sendResponse, e => sendResponse({ error: String((e && e.message) || "failed") }));
   return true;
 });
 
