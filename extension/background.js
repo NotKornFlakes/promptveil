@@ -15,6 +15,8 @@ const { Veil, LABELS } = self.PromptVeil;
 const C = self.PromptVeilCrypto;
 
 const DEFAULTS = { disabledSites: [], guardTyped: false };
+const IDLE_CHOICES = [15, 30, 60, 240, 0]; // minutes; 0 = never
+const IDLE_DEFAULT = 60;
 const MAX_TEXT = 1_000_000; // characters; bigger requests are refused
 const MIN_PASSWORD = 8;
 const AI_SITES = chrome.runtime.getManifest().content_scripts[0].matches;
@@ -27,7 +29,52 @@ const ready = (async () => {
   await chrome.storage.session.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" });
   sessionRestricted = true;
   await migrateLists().catch(() => {}); // retried on the next start or unlock
+  await applyIdleSettings().catch(() => {});
 })();
+
+// --- auto-clear and auto-lock ------------------------------------------------------------
+// After N idle minutes (no PromptVeil use) the vault is cleared and, in password mode, the lists
+// lock. In password mode PromptVeil also locks when the computer locks, or sits idle that long.
+// Closing the browser always clears both (chrome.storage.session is memory only).
+async function idleMinutes() {
+  const { idleMinutes: m } = await chrome.storage.local.get({ idleMinutes: IDLE_DEFAULT });
+  return IDLE_CHOICES.includes(m) ? m : IDLE_DEFAULT;
+}
+let lastTouch = 0;
+// Called on real use. Re-arming the alarm at most every 30 s is plenty for minute-sized timeouts.
+async function touch(force) {
+  const now = Date.now();
+  if (!force && now - lastTouch < 30000) return;
+  lastTouch = now;
+  const m = await idleMinutes();
+  if (m) await chrome.alarms.create("pv-idle", { delayInMinutes: m });
+  else await chrome.alarms.clear("pv-idle");
+}
+async function applyIdleSettings() {
+  const m = await idleMinutes();
+  if (m) chrome.idle.setDetectionInterval(m * 60);
+  await touch(true);
+}
+async function lockIfPassword() {
+  const sealed = await sealedLists();
+  if (sealed && sealed.mode === "password") await serial(lock);
+}
+async function onAlarm(alarm) {
+  if (alarm.name !== "pv-idle") return;
+  await ready;
+  await chrome.storage.session.set({ mapping: {} });
+  vaultChanged();
+  await lockIfPassword();
+}
+async function onIdleState(state) {
+  await ready;
+  if (state === "locked" || (state === "idle" && (await idleMinutes()))) await lockIfPassword();
+}
+chrome.alarms.onAlarm.addListener(onAlarm);
+chrome.idle.onStateChanged.addListener(onIdleState);
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === "local" && changes.idleMinutes) applyIdleSettings().catch(() => {});
+});
 
 // --- device key (IndexedDB) ---------------------------------------------------------------
 function idb(mode, fn) {
@@ -263,6 +310,7 @@ async function handle(msg, sender) {
   if (!msg || typeof msg !== "object" || typeof msg.type !== "string") throw new Error("bad message");
   if (sender.id !== chrome.runtime.id) throw new Error("not allowed");
   await ready;
+  if (msg.type !== "has") touch().catch(() => {}); // "has" runs on its own as pages re-render: not real use
   switch (msg.type) {
     case "scrub": {
       const text = textOf(msg);
@@ -433,6 +481,7 @@ async function notify(tab, r) {
 }
 
 async function copySelection(tab, text) {
+  touch().catch(() => {});
   let r;
   if (text === null) r = { count: 0, reason: "noaccess" };
   else if (!text) r = { count: 0, reason: "noselection" };

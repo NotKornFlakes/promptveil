@@ -117,5 +117,11 @@
     draw();
   });
 
+  chrome.storage.local.get({ idleMinutes: 60 }).then(s => { $("idleMinutes").value = String(s.idleMinutes); });
+  $("idleMinutes").addEventListener("change", async () => {
+    await chrome.storage.local.set({ idleMinutes: Number($("idleMinutes").value) });
+    say($("idleMsg"), "Saved.");
+  });
+
   draw();
 })();

@@ -517,10 +517,51 @@ with sync_playwright() as p, tempfile.TemporaryDirectory() as prof:
     opt.screenshot(path=str(SHOTS / "ext_options.png"), full_page=True)
     sw.evaluate("saveLists({terms: ['Marcus Bell', 'Riverside Dental'], allow: []})")
 
+    # 15. Auto-clear and auto-lock. The alarm and idle handlers are called directly (Chrome won't
+    # fire a 60-minute alarm or a screen lock on demand); their scheduling is checked as set up.
+    alarm = lambda: sw.evaluate("chrome.alarms.get('pv-idle')")
+    now = lambda: sw.evaluate("Date.now()")
+    a = alarm()
+    check("idle: vault auto-clear armed for 60 minutes by default",
+          a is not None and now() + 55 * 60000 <= a["scheduledTime"] <= now() + 60 * 60000, a)
+    opt.select_option("#idleMinutes", "15"); opt.wait_for_timeout(400)
+    a = alarm()
+    check("idle: changing the setting re-arms the alarm",
+          a is not None and abs(a["scheduledTime"] - (now() + 15 * 60000)) < 60000, a)
+    opt.select_option("#idleMinutes", "0"); opt.wait_for_timeout(400)
+    check("idle: 'Never' removes the alarm", alarm() is None, alarm())
+    opt.select_option("#idleMinutes", "60"); opt.wait_for_timeout(400)
+
+    sw.evaluate(f"onIdleState('locked')")
+    check("computer locked, no password: lists stay usable", sw.evaluate("listState()")["lists"] is not None)
+    sw.evaluate(f"setPassword({json.dumps(PW)})")
+    sw.evaluate("onIdleState('locked')")
+    check("computer locked: PromptVeil locks in password mode", sw.evaluate("listState()")["locked"] is True)
+    sw.evaluate(f"unlock({json.dumps(PW)})")
+    sw.evaluate("chrome.storage.local.set({idleMinutes: 0})"); opt.wait_for_timeout(300)
+    sw.evaluate("onIdleState('idle')")
+    idle_never_ok = sw.evaluate("listState()")["locked"] is False
+    sw.evaluate("chrome.storage.local.set({idleMinutes: 60})"); opt.wait_for_timeout(300)
+    sw.evaluate("onIdleState('idle')")
+    check("computer idle: locks when a timeout is set, not when it's 'Never'",
+          idle_never_ok and sw.evaluate("listState()")["locked"] is True)
+    sw.evaluate(f"unlock({json.dumps(PW)})")
+
     # Last, because it empties the vault: starting a new session removes the buttons.
     pop.click("nav button[data-tab=vault]"); pop.click("#reset"); pa.wait_for_timeout(1500)
     check("button: removed when the vault is reset", pa.locator("promptveil-copy").count() == 0,
           pa.locator("promptveil-copy").count())
+
+    # The idle alarm firing: clears the vault (buttons go away) and locks in password mode.
+    pg.bring_to_front(); pg.fill("#box", ""); page_paste(pg, "#box", "Ping 10.1.2.3 about it")
+    pa.evaluate("t => stream(t)", "Fixed [IP_1] now.")
+    pa.wait_for_selector("promptveil-copy", state="attached", timeout=5000)
+    vault_had = sw.evaluate("chrome.storage.session.get('mapping')")["mapping"] != {}
+    sw.evaluate("onAlarm({name: 'pv-idle'})"); pa.wait_for_timeout(1500)
+    check("idle alarm: vault cleared, buttons removed, lists locked",
+          vault_had and sw.evaluate("chrome.storage.session.get('mapping')")["mapping"] == {}
+          and pa.locator("promptveil-copy").count() == 0 and sw.evaluate("listState()")["locked"] is True,
+          [vault_had, pa.locator("promptveil-copy").count()])
 
     ctx.close()
 

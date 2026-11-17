@@ -68,6 +68,24 @@
     <div class="row"><button type="button" class="danger" id="resetLists">Forgot password? Delete my lists</button></div>
   </section>
 
+  <section aria-labelledby="idleTitle">
+    <h2 id="idleTitle">Auto-clear and auto-lock</h2>
+    <form id="idleForm">
+      <label for="idleMinutes">When PromptVeil hasn't been used for</label>
+      <select id="idleMinutes">
+        <option value="15">15 minutes</option>
+        <option value="30">30 minutes</option>
+        <option value="60">1 hour</option>
+        <option value="240">4 hours</option>
+        <option value="0">Never</option>
+      </select>
+    </form>
+    <p class="mute">…the placeholder vault is cleared, so old placeholders can't be restored any more. With a password set,
+      PromptVeil also locks then, and whenever your computer locks or sits idle that long. Closing the browser always
+      clears the vault and locks.</p>
+    <p class="msg" id="idleMsg" role="status"></p>
+  </section>
+
   <section aria-labelledby="backupTitle">
     <h2 id="backupTitle">Backup of your lists</h2>
     <p class="mute">The backup file is encrypted with the password you choose here (AES-256-GCM, key from PBKDF2-SHA256 with
