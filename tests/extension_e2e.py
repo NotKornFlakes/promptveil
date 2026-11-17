@@ -228,6 +228,52 @@ with sync_playwright() as p, tempfile.TemporaryDirectory() as prof:
     check("offscreen document closed after copying",
           sw.evaluate("chrome.runtime.getContexts({contextTypes: ['OFFSCREEN_DOCUMENT']})") == [])
 
+    # 11. Right-click "Restore real values with PromptVeil" copies right away; "Restore and view…"
+    # opens the restore window. Playwright can't click Chrome's native context menu, so this calls
+    # onMenuClick, the function the menu's onClicked listener runs, from the service worker.
+    # The tab is the active one: the extension has no `tabs` permission, so it can't look up
+    # non-AI tabs by URL.
+    MENU = """async ([id, fallback]) => {
+        const [tab] = await chrome.tabs.query({active: true, lastFocusedWindow: true});
+        return await onMenuClick({menuItemId: id, frameId: 0, selectionText: fallback}, tab);
+    }"""
+    pa.evaluate("""() => { const r = document.createRange(); r.selectNodeContents(document.getElementById('u1'));
+        getSelection().removeAllRanges(); getSelection().addRange(r); }""")
+    pg3.evaluate("t => navigator.clipboard.writeText(t)", "sentinel")
+    pages_before = len(ctx.pages)
+    pa.bring_to_front()
+    r = sw.evaluate(MENU, ["pv-restore", "My question about [TERM_2]"])
+    check("right-click: restores and reports a count", r == {"count": 1}, r)
+    check("right-click: opens no window", len(ctx.pages) == pages_before, len(ctx.pages))
+    shown = shadow_text(pa)
+    check("right-click: toast on the page", "Copied with 1 real value restored" in shown, shown)
+    got = clipboard(pg3)
+    check("right-click: clipboard holds the restored selection", got == "My question about Marcus Bell", repr(got))
+    dom = pa.content() + "\n".join(pa.evaluate("window.seen"))
+    check("right-click: real values never entered the page DOM", not any(x in dom for x in REAL), [x for x in REAL if x in dom])
+
+    pa.bring_to_front()
+    with ctx.expect_page() as win:
+        sw.evaluate(MENU, ["pv-restore-view", ""])
+    view = win.value; view.wait_for_load_state(); view.wait_for_timeout(400)
+    check("Restore and view…: opens the restore window", "view=restore" in view.url, view.url)
+    check("Restore and view…: shows the restored selection",
+          view.inner_text("#restoreOut") == "My question about Marcus Bell", view.inner_text("#restoreOut"))
+    view.close()
+
+    # Outside the AI sites there's no content script and no host access: Chrome's selectionText is
+    # used, and the toolbar badge shows the result instead of a toast.
+    pg3.bring_to_front()
+    r = sw.evaluate(MENU, ["pv-restore", "ping [IP_1]"])
+    badge = sw.evaluate("""async () => { const [t] = await chrome.tabs.query({active: true, lastFocusedWindow: true});
+        return chrome.action.getBadgeText({tabId: t.id}); }""")
+    check("right-click on other sites: copies and shows the count on the badge", r == {"count": 1} and badge == "1", [r, badge])
+    got = clipboard(pg3)
+    check("right-click on other sites: clipboard holds the restored text", got == "ping 192.168.10.25", repr(got))
+    check("right-click: nothing copied when nothing is known",
+          sw.evaluate(MENU, ["pv-restore", "no placeholders here"]) == {"count": 0, "reason": "none"}
+          and clipboard(pg3) == "ping 192.168.10.25")
+
     # Last, because it empties the vault: starting a new session removes the buttons.
     pop.click("nav button[data-tab=vault]"); pop.click("#reset"); pa.wait_for_timeout(1500)
     check("button: removed when the vault is reset", pa.locator("promptveil-copy").count() == 0,

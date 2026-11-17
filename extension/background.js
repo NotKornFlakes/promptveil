@@ -154,26 +154,80 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   return true;
 });
 
-// --- "Restore with PromptVeil" right-click menu ---------------------------------------
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.contextMenus.create({
-    id: "pv-restore",
-    title: "Restore real values with PromptVeil",
-    contexts: ["selection"],
-  });
+// --- restore the selection: right-click menu (and keyboard shortcut) ---------------------
+const MENU_COPY = "pv-restore";
+const MENU_VIEW = "pv-restore-view";
+
+chrome.runtime.onInstalled.addListener(async () => {
+  await chrome.contextMenus.removeAll();
+  chrome.contextMenus.create({ id: MENU_COPY, title: "Restore real values with PromptVeil", contexts: ["selection"] });
+  chrome.contextMenus.create({ id: MENU_VIEW, title: "Restore and view…", contexts: ["selection"] });
 });
 
-chrome.contextMenus.onClicked.addListener(async (info, tab) => {
-  if (info.menuItemId !== "pv-restore") return;
-  let text = info.selectionText || "";
-  try {
-    // selectionText collapses line breaks; read the selection directly to keep formatting.
-    const [res] = await chrome.scripting.executeScript({
-      target: { tabId: tab.id, frameIds: [info.frameId || 0] },
-      func: () => String(getSelection()),
-    });
-    if (res && res.result) text = res.result;
-  } catch (_) { /* page not scriptable: fall back to selectionText */ }
+// Read the selection with line breaks (selectionText collapses them). Only works on the AI
+// sites (our host permissions); anywhere else we fall back to what Chrome gave us.
+async function readSelection(tab, frameIds, fallback) {
+  if (tab && tab.id >= 0) {
+    try {
+      const results = await chrome.scripting.executeScript({
+        target: frameIds ? { tabId: tab.id, frameIds } : { tabId: tab.id, allFrames: true },
+        func: () => ({ text: String(getSelection()), focused: document.hasFocus() }),
+      });
+      const found = results.map(r => r && r.result).filter(r => r && r.text);
+      const pick = found.find(r => r.focused) || found[0];
+      if (pick) return pick.text;
+    } catch (_) { /* page not scriptable */ }
+  }
+  return fallback || "";
+}
+
+// What to tell the user. Never includes the text itself.
+function feedback(r) {
+  const s = n => (n === 1 ? "" : "s");
+  switch (r.reason) {
+    case undefined: return { title: `Copied with ${r.count} real value${s(r.count)} restored`, detail: "Paste it wherever you need it. The page never saw them." };
+    case "noselection": return { title: "Nothing selected", detail: "Select the AI's answer first.", bad: true };
+    case "toolong": return { title: "Selection too long", detail: "Select a shorter part of the answer.", bad: true };
+    case "empty": return { title: "Nothing to restore", detail: "The vault is empty. It's cleared when the browser closes or you start a new session.", bad: true };
+    case "none": return { title: "Nothing to restore", detail: "The selection has no placeholders PromptVeil knows.", bad: true };
+    default: return { title: "Couldn't copy", detail: "Select the text, right-click → Restore and view…", bad: true };
+  }
+}
+
+const badgeTimers = new Map();
+async function notify(tab, r) {
+  const f = feedback(r);
+  const tabId = tab && tab.id >= 0 ? tab.id : undefined;
+  if (tabId !== undefined) {
+    try {
+      await chrome.tabs.sendMessage(tabId, { type: "toast", title: f.title, detail: f.detail, bad: !!f.bad }, { frameId: 0 });
+      return;
+    } catch (_) { /* no PromptVeil content script here (not an AI site): use the badge */ }
+  }
+  const text = f.bad ? "!" : r.count > 99 ? "99+" : String(r.count);
+  await chrome.action.setBadgeBackgroundColor({ color: f.bad ? "#d1242f" : "#0f9d74", tabId });
+  await chrome.action.setBadgeText({ text, tabId });
+  clearTimeout(badgeTimers.get(tabId));
+  badgeTimers.set(tabId, setTimeout(() => chrome.action.setBadgeText({ text: "", tabId }).catch(() => {}), 4000));
+}
+
+async function copySelection(tab, text) {
+  let r;
+  if (!text) r = { count: 0, reason: "noselection" };
+  else if (text.length > MAX_TEXT) r = { count: 0, reason: "toolong" };
+  else {
+    try { r = await restoreToClipboard(text); } catch (_) { r = { count: 0, reason: "error" }; }
+  }
+  await notify(tab, r);
+  return r;
+}
+
+async function onMenuClick(info, tab) {
+  if (info.menuItemId !== MENU_COPY && info.menuItemId !== MENU_VIEW) return;
+  const text = await readSelection(tab, [info.frameId || 0], info.selectionText);
+  if (info.menuItemId === MENU_COPY) return copySelection(tab, text);
+  // "Restore and view…": the restore window shows the result before you copy it.
   await chrome.storage.session.set({ pendingRestore: text });
-  chrome.windows.create({ url: "popup.html?view=restore&window=1", type: "popup", width: 440, height: 640 });
-});
+  await chrome.windows.create({ url: "popup.html?view=restore&window=1", type: "popup", width: 440, height: 640 });
+}
+chrome.contextMenus.onClicked.addListener(onMenuClick);

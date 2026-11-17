@@ -46,6 +46,10 @@
   chrome.runtime.onMessage.addListener((msg, sender) => {
     if (sender.id !== chrome.runtime.id || sender.tab || !msg) return;
     if (msg.type === "vault-changed") { gen++; schedule(); }
+    // Result of a right-click restore or the shortcut. The worker never puts real values in it.
+    if (msg.type === "toast" && typeof msg.title === "string" && typeof msg.detail === "string") {
+      toast(msg.title.slice(0, 200), msg.detail.slice(0, 300), msg.bad === true);
+    }
   });
 
   function editableFrom(node) {
