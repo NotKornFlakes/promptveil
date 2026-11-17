@@ -71,8 +71,14 @@ document.getElementById('send').addEventListener('click', () => { sent.push(box.
 </script></body></html>"""
 
 def page_paste(pg, selector, text):
-    """Dispatch a paste event from the *page* world, like a browser paste does."""
-    pg.focus(selector)
+    """Paste like a user does: put the text on the clipboard, then press Ctrl+V in the field."""
+    pg.bring_to_front()
+    pg.evaluate("t => navigator.clipboard.writeText(t)", text)
+    pg.focus(selector); pg.keyboard.press("Control+V")
+    pg.wait_for_timeout(400)
+
+def synthetic_paste(pg, selector, text):
+    """A paste event made up by the page's own script (isTrusted false). PromptVeil must ignore it."""
     pg.evaluate("""([sel, text]) => { const dt = new DataTransfer(); dt.setData('text/plain', text);
         document.querySelector(sel).dispatchEvent(new ClipboardEvent('paste', {clipboardData: dt, bubbles: true, cancelable: true})); }""",
         [selector, text])
@@ -141,6 +147,8 @@ with sync_playwright() as p, tempfile.TemporaryDirectory() as prof:
         else TEXTAREA_PAGE, content_type="text/html"))
     ctx.route("https://claude.ai/**", lambda r: r.fulfill(body=RICH_PAGE, content_type="text/html"))
     ctx.route("https://example.com/**", lambda r: r.fulfill(body=TEXTAREA_PAGE, content_type="text/html"))
+    for origin in ["https://chatgpt.com", "https://claude.ai", "https://example.com"]:
+        ctx.grant_permissions(["clipboard-read", "clipboard-write"], origin=origin)
     sw = ctx.service_workers[0] if ctx.service_workers else ctx.wait_for_event("serviceworker")
     ext_id = sw.url.split("/")[2]
     sw.evaluate("""() => { self.__logs = [];
@@ -214,13 +222,13 @@ with sync_playwright() as p, tempfile.TemporaryDirectory() as prof:
     # 5. sites outside the list are untouched
     pg3 = ctx.new_page(); pg3.goto("https://example.com/"); pg3.wait_for_timeout(300)
     page_paste(pg3, "#box", "bob@x.io")
-    check("non-AI site untouched", pg3.input_value("#box") == "", pg3.input_value("#box"))
+    check("non-AI site untouched (paste goes through as is)", pg3.input_value("#box") == "bob@x.io", pg3.input_value("#box"))
 
     # 6. per-site off switch
     sw.evaluate("chrome.storage.local.set({disabledSites: ['chatgpt.com']})"); pg.wait_for_timeout(200)
     pg.fill("#box", "")
     page_paste(pg, "#box", "raw@x.io")
-    check("disabled site: content script stands down", pg.input_value("#box") == "", pg.input_value("#box"))
+    check("disabled site: content script stands down (paste goes through as is)", pg.input_value("#box") == "raw@x.io", pg.input_value("#box"))
     sw.evaluate("chrome.storage.local.set({disabledSites: []})")
 
     # 7. vault lives in session storage (memory), not local storage (disk)
@@ -267,6 +275,30 @@ with sync_playwright() as p, tempfile.TemporaryDirectory() as prof:
         check("content script 'copyRestored' gets a count only", r4 == {"count": 1}, r4)
         r5 = in_cs("chrome.runtime.sendMessage({type:'has', text: 'x'.repeat(1000001)})")
         check("oversized text refused", isinstance(r5, dict) and "error" in r5, r5)
+        refused = {t: in_cs(f"chrome.runtime.sendMessage({{type:'{t}', text:'[EMAIL_1]', terms: [], allow: [], password: 'x'}})")
+                   for t in ["lists.get", "lists.set", "lists.export", "lock.set", "lock.remove", "copyText", "reset", "vault", "restore"]}
+        check("content scripts may only send scrub / has / scan / copyRestored",
+              all(isinstance(r, dict) and r.get("error") == "not allowed" for r in refused.values()), refused)
+        bad = [in_cs("chrome.runtime.sendMessage({type:'scrub', text: 42})"), in_cs("chrome.runtime.sendMessage({type: 7})"),
+               in_cs("chrome.runtime.sendMessage(['scrub'])"), in_cs("chrome.runtime.sendMessage({type:'scrub'})")]
+        check("malformed messages refused", all(isinstance(r, dict) and "error" in r for r in bad), bad)
+
+    # The page can't use its own (synthetic) paste events to probe the vault for known values.
+    vault_before = sw.evaluate("chrome.storage.session.get('mapping')")["mapping"]
+    pg2b.evaluate("() => { document.getElementById('ed').textContent = ''; window.seen = []; }")
+    synthetic_paste(pg2b, "#ed", "is marcus.bell@riversidedental.com known? and new.person@example.org")
+    check("synthetic paste events from the page are ignored (no vault probing)",
+          sw.evaluate("chrome.storage.session.get('mapping')")["mapping"] == vault_before
+          and pg2b.inner_text("#ed") == "" and not any("[EMAIL_" in x for x in pg2b.evaluate("window.seen")),
+          [pg2b.inner_text("#ed"), pg2b.evaluate("window.seen")])
+    fetched = pg2b.evaluate(f"fetch('chrome-extension://{ext_id}/popup.html').then(() => 'fetched', () => 'blocked')")
+    manifest = json.loads((ROOT / "extension" / "manifest.json").read_text())
+    check("sites can't load extension pages (no web_accessible_resources)",
+          fetched == "blocked" and "web_accessible_resources" not in manifest, fetched)
+    check("other extensions can't connect; extension-page CSP blocks network, base, forms, framing",
+          manifest.get("externally_connectable") == {"ids": []}
+          and all(d in manifest["content_security_policy"]["extension_pages"]
+                  for d in ["connect-src 'none'", "object-src 'none'", "base-uri 'none'", "form-action 'none'", "frame-ancestors 'none'"]))
 
     # 10. "Copy with real values" button on AI answers
     ctx.grant_permissions(["clipboard-read", "clipboard-write"], origin="https://example.com")

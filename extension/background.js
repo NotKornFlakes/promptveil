@@ -21,6 +21,7 @@ const CLEAR_CHOICES = [0, 30, 60, 120]; // seconds; 0 = never (the default: it n
 const MAX_TEXT = 1_000_000; // characters; bigger requests are refused
 const MIN_PASSWORD = 8;
 const AI_SITES = chrome.runtime.getManifest().content_scripts[0].matches;
+const AI_HOSTS = new Set(AI_SITES.map(m => new URL(m.replace("/*", "/")).hostname));
 
 // --- startup ----------------------------------------------------------------------------
 // Session storage must be closed to content scripts before any key is written to it. It is by
@@ -254,6 +255,11 @@ const stringList = v => (Array.isArray(v) && v.length <= 5000 && v.every(x => ty
 // AI site's URL here, so they can never pull real values out of the vault.
 const fromExtensionPage = sender =>
   sender.id === chrome.runtime.id && typeof sender.url === "string" && sender.url.startsWith(chrome.runtime.getURL(""));
+// Our content script: runs only in tabs on the AI sites listed in the manifest.
+function fromContentScript(sender) {
+  if (sender.id !== chrome.runtime.id || !sender.tab || typeof sender.url !== "string") return false;
+  try { return AI_HOSTS.has(new URL(sender.url).hostname); } catch (_) { return false; }
+}
 
 // Tell the AI-site tabs the vault changed so their "Copy with real values" buttons are re-checked.
 async function vaultChanged() {
@@ -353,7 +359,8 @@ async function restoreToClipboard(text) {
 
 async function handle(msg, sender) {
   if (!msg || typeof msg !== "object" || typeof msg.type !== "string") throw new Error("bad message");
-  if (sender.id !== chrome.runtime.id) throw new Error("not allowed");
+  const page = fromExtensionPage(sender);
+  if (!page && !fromContentScript(sender)) throw new Error("not allowed");
   await ready;
   if (msg.type !== "has") touch().catch(() => {}); // "has" runs on its own as pages re-render: not real use
   switch (msg.type) {
@@ -392,7 +399,7 @@ async function handle(msg, sender) {
   }
 
   // Everything below is for PromptVeil's own pages only.
-  if (!fromExtensionPage(sender)) throw new Error("not allowed");
+  if (!page) throw new Error("not allowed");
   switch (msg.type) {
     case "restore":
       return new Veil({ mapping: await getMapping() }).restore(textOf(msg));

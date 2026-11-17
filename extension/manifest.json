@@ -48,7 +48,8 @@
       "description": "Restore real values in the selection and copy them"
     }
   },
+  "externally_connectable": { "ids": [] },
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'none'; connect-src 'none'"
+    "extension_pages": "script-src 'self'; object-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
   }
 }
