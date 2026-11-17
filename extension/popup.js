@@ -100,9 +100,11 @@
   $("reset").addEventListener("click", async () => { await send({ type: "reset" }); drawVault(); doRestore(); });
 
   // ---------------------------------------------------------------- settings
-  const s = await chrome.storage.local.get({ terms: [], allow: [] });
+  const s = await chrome.storage.local.get({ terms: [], allow: [], guardTyped: false });
   $("terms").value = s.terms.join("\n");
   $("allow").value = s.allow.join("\n");
+  $("guardTyped").checked = s.guardTyped === true;
+  $("guardTyped").addEventListener("change", () => chrome.storage.local.set({ guardTyped: $("guardTyped").checked }));
   let t;
   function save() {
     clearTimeout(t);

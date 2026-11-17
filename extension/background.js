@@ -9,7 +9,7 @@
 importScripts("engine.js");
 const { Veil, LABELS } = self.PromptVeil;
 
-const DEFAULTS = { terms: [], allow: [], disabledSites: [] };
+const DEFAULTS = { terms: [], allow: [], disabledSites: [], guardTyped: false };
 const MAX_TEXT = 1_000_000; // characters; bigger requests are refused
 const AI_SITES = chrome.runtime.getManifest().content_scripts[0].matches;
 
@@ -117,6 +117,15 @@ async function handle(msg, sender) {
       });
       if (r.grew) vaultChanged();
       return { text: r.out.text, total: r.out.findings.length, counts: summarize(r.out.findings) };
+    }
+
+    case "scan": {
+      // Optional "check typed text before sending". Counts only, nothing is added to the vault.
+      const text = textOf(msg);
+      const s = await settings();
+      if (!s.guardTyped) throw new Error("typed-text check is off");
+      const findings = new Veil({ terms: s.terms, allow: s.allow }).find(text);
+      return { total: findings.length, counts: summarize(findings) };
     }
 
     case "has": {

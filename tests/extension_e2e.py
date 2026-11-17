@@ -32,6 +32,10 @@ document.getElementById('ed').addEventListener('paste', e => {
   const t = e.clipboardData.getData('text/plain'); window.seen.push(t); e.preventDefault();
   document.execCommand('insertText', false, t);
 });
+window.sent = [];  // what the site would send: Enter (without Shift) sends and clears the editor
+document.getElementById('ed').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sent.push(e.target.innerText); e.target.textContent = ''; }
+});
 </script></body></html>"""
 
 # Stand-in for a ChatGPT conversation: a user turn, two answers that must not get a button
@@ -54,6 +58,16 @@ window.stream = text => {
   d.setAttribute('data-message-author-role', 'assistant'); document.getElementById('thread').appendChild(d);
   let i = 0; const t = setInterval(() => { d.append(text.slice(i, i + 6)); i += 6; if (i >= text.length) clearInterval(t); }, 25);
 };
+</script></body></html>"""
+
+# Stand-in for the ChatGPT composer: Enter (without Shift) or the Send button sends and clears.
+COMPOSE_PAGE = """<html><body><textarea id="box" rows="4" cols="60"></textarea>
+<button data-testid="send-button" id="send">Send</button>
+<script>
+window.sent = [];
+const box = document.getElementById('box');
+box.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sent.push(box.value); box.value = ''; } });
+document.getElementById('send').addEventListener('click', () => { sent.push(box.value); box.value = ''; });
 </script></body></html>"""
 
 def page_paste(pg, selector, text):
@@ -82,6 +96,26 @@ def shadow_text(pg):
     walk(root, False, None)
     return " ".join(out)
 
+def click_shadow_button(pg, label):
+    """Really click (trusted mouse event) a button inside PromptVeil's closed shadow roots."""
+    cdp = pg.context.new_cdp_session(pg)
+    try:
+        root = cdp.send("DOM.getDocument", {"depth": -1, "pierce": True})["root"]
+        found = []
+        def walk(n):
+            if n.get("nodeName") == "BUTTON" and any(label in c.get("nodeValue", "") for c in n.get("children", [])):
+                found.append(n)
+            for c in n.get("children", []) + n.get("shadowRoots", []):
+                walk(c)
+        walk(root)
+        if not found:
+            return False
+        q = cdp.send("DOM.getBoxModel", {"nodeId": found[0]["nodeId"]})["model"]["border"]
+    finally:
+        cdp.detach()
+    pg.mouse.click(sum(q[0::2]) / 4, sum(q[1::2]) / 4)
+    return True
+
 def clipboard(plain):
     """Read the clipboard the way a user would: Ctrl+V into a page PromptVeil doesn't touch."""
     plain.bring_to_front()
@@ -99,7 +133,8 @@ with sync_playwright() as p, tempfile.TemporaryDirectory() as prof:
         args=["--headless=new", f"--disable-extensions-except={EXT}", f"--load-extension={EXT}"],
         viewport={"width": 1100, "height": 700})
     ctx.route("https://chatgpt.com/**", lambda r: r.fulfill(
-        body=ANSWERS_PAGE if "/c/answers" in r.request.url else TEXTAREA_PAGE, content_type="text/html"))
+        body=ANSWERS_PAGE if "/c/answers" in r.request.url else COMPOSE_PAGE if "/c/compose" in r.request.url
+        else TEXTAREA_PAGE, content_type="text/html"))
     ctx.route("https://claude.ai/**", lambda r: r.fulfill(body=RICH_PAGE, content_type="text/html"))
     ctx.route("https://example.com/**", lambda r: r.fulfill(body=TEXTAREA_PAGE, content_type="text/html"))
     sw = ctx.service_workers[0] if ctx.service_workers else ctx.wait_for_event("serviceworker")
@@ -293,6 +328,78 @@ with sync_playwright() as p, tempfile.TemporaryDirectory() as prof:
         return chrome.action.getBadgeText({tabId: t.id}); }""")
     check("shortcut on other sites: says it can't read the selection, copies nothing",
           r == {"count": 0, "reason": "noaccess"} and badge == "!" and clipboard(pg3) == "My question about Marcus Bell", [r, badge])
+
+    # 13. Optional "check typed text before sending" (send guard)
+    pc = ctx.new_page(); pc.goto("https://chatgpt.com/c/compose"); pc.wait_for_timeout(300)
+    sent = lambda pg: pg.evaluate("window.sent")
+    pc.click("#box"); pc.keyboard.type("default off: mail bob@example.org"); pc.wait_for_timeout(300)
+    pc.keyboard.press("Enter"); pc.wait_for_timeout(300)
+    check("send guard: off by default", sent(pc) == ["default off: mail bob@example.org"], sent(pc))
+
+    sw.evaluate("chrome.storage.local.set({guardTyped: true})"); pc.wait_for_timeout(300)
+    pc.click("#box"); pc.keyboard.type("Ping ops@riverside.example"); pc.keyboard.press("Shift+Enter")
+    pc.keyboard.type("and 10.20.30.40"); pc.wait_for_timeout(400)
+    check("send guard: Shift+Enter still adds a new line",
+          pc.input_value("#box") == "Ping ops@riverside.example\nand 10.20.30.40" and len(sent(pc)) == 1, pc.input_value("#box"))
+    pc.keyboard.press("Enter"); pc.wait_for_timeout(500)
+    shown = shadow_text(pc)
+    check("send guard: Enter with sensitive text is blocked", len(sent(pc)) == 1, sent(pc))
+    check("send guard: toast offers to hide them", "Hide 2 items" in shown, shown)
+    pc.screenshot(path=str(SHOTS / "ext_send_guard.png"))
+    check("send guard: Hide button clicked", click_shadow_button(pc, "Hide 2 items")); pc.wait_for_timeout(500)
+    val = pc.input_value("#box")
+    check("send guard: Hide replaces the box with scrubbed text",
+          "[EMAIL_" in val and "[IP_" in val and "\n" in val and "ops@riverside.example" not in val and "10.20.30.40" not in val, val)
+    pc.keyboard.press("Enter"); pc.wait_for_timeout(400)
+    check("send guard: then the scrubbed message sends", sent(pc)[1:] == [val], sent(pc))
+
+    pc.click("#box"); pc.keyboard.type("call 212-555-0199"); pc.wait_for_timeout(300)
+    pc.keyboard.press("Enter"); pc.wait_for_timeout(300)
+    blocked = len(sent(pc)) == 2
+    pc.keyboard.press("Enter"); pc.wait_for_timeout(300)
+    check("send guard: blocks once, sending again sends as is", blocked and sent(pc)[2:] == ["call 212-555-0199"], sent(pc))
+
+    pc.click("#box"); pc.keyboard.type("key AKIAIOSFODNN7EXAMPLE"); pc.wait_for_timeout(300)
+    pc.click("#send"); pc.wait_for_timeout(500)
+    check("send guard: Send button is blocked too", len(sent(pc)) == 3 and "Hide 1 item" in shadow_text(pc), sent(pc))
+    click_shadow_button(pc, "Hide 1 item"); pc.wait_for_timeout(500)
+    pc.click("#send"); pc.wait_for_timeout(300)
+    check("send guard: after Hide, Send sends the scrubbed text", sent(pc)[3:] == ["key [AWS_KEY_1]"], sent(pc))
+
+    pc.click("#box"); pc.keyboard.type("hello there"); pc.wait_for_timeout(300); pc.keyboard.press("Enter"); pc.wait_for_timeout(300)
+    check("send guard: clean text sends normally", sent(pc)[4:] == ["hello there"], sent(pc))
+
+    # Enter pressed while the check is still running: the send is held, then repeated once the
+    # check comes back clean, or turned into the Hide offer if it isn't. settings() is slowed
+    # down in the worker so the check is guaranteed to still be running.
+    sw.evaluate("""() => { self.__settings = settings;
+        settings = async () => { await new Promise(r => setTimeout(r, 400)); return self.__settings(); }; }""")
+    pc.click("#box"); pc.keyboard.type("held then sent"); pc.keyboard.press("Enter"); pc.wait_for_timeout(100)
+    held = len(sent(pc)) == 5
+    pc.wait_for_timeout(1200)
+    check("send guard: Enter during a check is held, then sent when clean", held and sent(pc)[5:] == ["held then sent"], [held, sent(pc)])
+    pc.click("#box"); pc.keyboard.type("held: 10.66.66.66"); pc.keyboard.press("Enter"); pc.wait_for_timeout(1200)
+    check("send guard: Enter during a check is held, then blocked when sensitive",
+          len(sent(pc)) == 6 and "Hide 1 item" in shadow_text(pc), sent(pc))
+    sw.evaluate("() => { settings = self.__settings; }")
+    pc.fill("#box", "")
+
+    # Rich editor (Claude-style): Hide goes through the editor's own paste handling.
+    pg2.bring_to_front()
+    pg2.evaluate("() => { document.getElementById('ed').textContent = ''; window.seen = []; window.sent = []; }")
+    pg2.click("#ed"); pg2.keyboard.type("ask Marcus Bell at marcus.bell@riversidedental.com"); pg2.wait_for_timeout(400)
+    pg2.keyboard.press("Enter"); pg2.wait_for_timeout(500)
+    check("send guard (rich editor): blocked", sent(pg2) == [], sent(pg2))
+    click_shadow_button(pg2, "Hide 2 items"); pg2.wait_for_timeout(500)
+    check("send guard (rich editor): Hide scrubs the editor, page only saw scrubbed text",
+          pg2.inner_text("#ed") == "ask [TERM_2] at [EMAIL_1]" and pg2.evaluate("window.seen") == ["ask [TERM_2] at [EMAIL_1]"],
+          [pg2.inner_text("#ed"), pg2.evaluate("window.seen")])
+    pg2.keyboard.press("Enter"); pg2.wait_for_timeout(400)
+    check("send guard (rich editor): then it sends", sent(pg2) == ["ask [TERM_2] at [EMAIL_1]"], sent(pg2))
+    if iso:
+        r6 = in_cs("chrome.runtime.sendMessage({type:'scan', text:'mail marcus.bell@riversidedental.com'})")
+        check("content script 'scan' gets counts only", isinstance(r6, dict) and r6.get("total") == 1 and "marcus" not in str(r6), r6)
+    sw.evaluate("chrome.storage.local.set({guardTyped: false})")
 
     # Last, because it empties the vault: starting a new session removes the buttons.
     pop.click("nav button[data-tab=vault]"); pop.click("#reset"); pa.wait_for_timeout(1500)
