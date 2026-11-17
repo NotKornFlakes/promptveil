@@ -44,7 +44,8 @@ Automatically hides emails, keys, passwords, card numbers and IPs when you paste
 > PRIVATE BY DESIGN
 > • Runs 100% on your device. No servers, no accounts, no analytics.
 > • The extension's code makes no network requests, and its security policy blocks them on its own pages.
-> • Real values are kept in memory only and erased when you close the browser.
+> • Real values are kept in memory only and erased when you close the browser or after an idle timeout.
+> • Your word lists are encrypted on your device (AES-256-GCM), with an optional password lock.
 > • Real values are never put back into the AI website's page, so the site can't read them.
 > • Open source (MIT).
 >
@@ -61,7 +62,10 @@ Automatically hides emails, keys, passwords, card numbers and IPs when you paste
 - **contextMenus justification:** Adds "Restore real values" and "Restore and view…" items for selected AI responses.
 - **scripting justification:** Reads the user's selected text, with line breaks, when they choose "Restore real values" or press the keyboard shortcut.
 - **offscreen justification:** Opens a hidden extension page (reason CLIPBOARD) that writes restored text to the clipboard, because the service worker can't, and restored text must not be put into the AI site's page. It closes after each copy.
-- **clipboardWrite justification:** Copies the AI's answer with the user's real values restored when they click "Copy with real values", use the right-click menu or press the shortcut. The extension never reads the clipboard.
+- **clipboardWrite justification:** Copies the AI's answer with the user's real values restored when they click "Copy with real values", use the right-click menu or press the shortcut.
+- **alarms justification:** Clears the in-memory placeholder vault and locks the extension after the user's idle timeout, and clears the clipboard after a copy if the user turned that on.
+- **idle justification:** Locks the extension's encrypted word lists when the computer locks or goes idle, if the user set a password.
+- **clipboardRead justification (optional permission):** Not requested at install. Requested only when the user turns on clipboard auto-clear, to check that the clipboard still holds what PromptVeil copied before clearing it. Given back when the user turns the feature off.
 - **Host permission justification:** The content script must run on the listed AI chat sites to scrub pasted text. It runs on no other sites.
 - **Remote code:** No, I am not using remote code.
 - **Data usage:** Check *none* of the data types (nothing is collected). Certify all three disclosures.

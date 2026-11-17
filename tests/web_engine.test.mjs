@@ -44,3 +44,23 @@ test("matches the Python engine byte-for-byte", () => {
   assert.equal(js, py);
   assert.ok(!js.includes("hunter2pass") && !js.includes("Sup3rS3cret") && js.includes("1.2.3.4.5"));
 });
+
+// Same cases as tests/test_engine.py, from one shared file. Array.from builds the arrays in this
+// realm (the engine runs in a vm context), so strict deepEqual compares values, not prototypes.
+const found = text => Array.from(new Veil().find(text), f => [f.kind, f.value]);
+const CASES = JSON.parse(readFileSync(new URL("./detector_cases.json", import.meta.url), "utf8"));
+for (const c of CASES.hidden) {
+  test(`hidden: ${c.text}`, () => {
+    assert.deepEqual(found(c.text), c.findings);
+  });
+}
+for (const text of CASES.kept) {
+  test(`kept: ${text}`, () => {
+    assert.deepEqual(found(text), []);
+  });
+}
+
+test("built-in HOST allow list matches src/promptveil/builtin_allow.json", () => {
+  const shared = JSON.parse(readFileSync(new URL("../src/promptveil/builtin_allow.json", import.meta.url), "utf8")).host;
+  assert.deepEqual([...ctx.PromptVeil.BUILTIN_HOST_ALLOW].sort(), [...shared].sort());
+});

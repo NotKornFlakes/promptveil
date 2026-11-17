@@ -1,0 +1,33 @@
+{
+  "_comment": "Shared by tests/test_engine.py and tests/web_engine.test.mjs, so the Python and JS engines are held to the same expectations. 'hidden': each text must produce exactly these [kind, value] findings, in order. 'kept': texts that must produce no findings.",
+  "hidden": [
+    {"text": "at 10.0.4.12.", "findings": [["IP", "10.0.4.12"]]},
+    {"text": "call 555-123-4567.", "findings": [["PHONE", "555-123-4567"]]},
+    {"text": "(10.0.4.12)", "findings": [["IP", "10.0.4.12"]]},
+    {"text": "10.0.4.12, then", "findings": [["IP", "10.0.4.12"]]},
+    {"text": "v6 at 2001:0db8:85a3:0000:0000:8a2e:0370:7334.", "findings": [["IPV6", "2001:0db8:85a3:0000:0000:8a2e:0370:7334"]]},
+    {"text": "db01.corp", "findings": [["HOST", "db01.corp"]]},
+    {"text": "printer.local", "findings": [["HOST", "printer.local"]]},
+    {"text": "api.prod.internal", "findings": [["HOST", "api.prod.internal"]]},
+    {"text": "nas.home.arpa", "findings": [["HOST", "nas.home.arpa"]]},
+    {"text": "db01.corp:5432", "findings": [["HOST", "db01.corp"]]},
+    {"text": "http://api.prod.internal:8080/health", "findings": [["HOST", "api.prod.internal"]]},
+    {"text": "nas.lan:/volume1", "findings": [["HOST", "nas.lan"]]},
+    {"text": "Send it to printer.local.", "findings": [["HOST", "printer.local"]]},
+    {"text": "(see printer.local)", "findings": [["HOST", "printer.local"]]}
+  ],
+  "kept": [
+    "1.2.3.4.5",
+    "v10.0.4.12.1",
+    "chrome.storage.local",
+    "I keep it in chrome.storage.local for now",
+    "chrome.storage.local.get(['terms'])",
+    "browser.storage.local.set(x)",
+    ".env.local",
+    "cp .env.example .env.local",
+    "settings.local",
+    "obj.local()",
+    "cache.local[0]",
+    "threading.local"
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "_comment": "Built-in 'never hide' list for the HOST detector: code identifiers and file names that end like an internal hostname. Matched case-insensitively against the whole match. This file is the single source: src/promptveil/detectors.py loads it, and scripts/build_extension.py copies it into web/index.html (and from there into extension/engine.js). Leave out names that could be real hosts, such as storage.local.",
+  "host": [
+    "appsettings.local",
+    "browser.storage.local",
+    "chrome.storage.local",
+    "config.local",
+    "env.local",
+    "settings.local",
+    "threading.local"
+  ]
+}

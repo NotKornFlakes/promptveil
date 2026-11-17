@@ -1,10 +1,11 @@
 import json
 import os
 import stat
+from pathlib import Path
 
 import pytest
 
-from promptveil import Veil
+from promptveil import Veil, vault
 from promptveil.cli import main
 
 SAMPLE = """Hi team, customer Jane Doe (jane.doe@acme.com, 555-867-5309) reported login failures.
@@ -70,6 +71,19 @@ def test_false_positives_rejected(bad):
     assert Veil().find(bad) == []
 
 
+CASES = json.loads((Path(__file__).parent / "detector_cases.json").read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("case", CASES["hidden"], ids=lambda c: c["text"])
+def test_shared_cases_hidden(case):
+    assert [[f.kind, f.value] for f in Veil().find(case["text"])] == case["findings"]
+
+
+@pytest.mark.parametrize("text", CASES["kept"])
+def test_shared_cases_kept(text):
+    assert Veil().find(text) == []
+
+
 def test_custom_terms_and_allow_list():
     v = Veil(terms=["Project Falcon", "Acme"], allow=["10.0.0.1"])
     out, _ = v.scrub("Acme's project falcon runs on 10.0.0.1")
@@ -101,6 +115,10 @@ def test_plain_text_untouched():
 def env(tmp_path, monkeypatch):
     monkeypatch.setenv("PROMPTVEIL_VAULT", str(tmp_path / "vault.json"))
     monkeypatch.setenv("PROMPTVEIL_CONFIG", str(tmp_path / "cfg"))
+    monkeypatch.delenv("PROMPTVEIL_PASSWORD", raising=False)
+    monkeypatch.setenv("PATH", str(tmp_path))  # never the real keyring
+    # These tests cover the plain-text vault (no secure extra); tests/test_vault.py covers encryption.
+    monkeypatch.setattr(vault, "have_crypto", lambda: False)
     return tmp_path
 
 

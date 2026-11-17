@@ -1,7 +1,7 @@
 """End-to-end test: loads the unpacked extension in Chrome and pastes into stand-in AI chat pages.
 Run: python3 scripts/build_extension.py && python3 tests/extension_e2e.py  (needs playwright + Chrome for Testing)
 """
-import os, sys, tempfile
+import base64, json, os, shutil, sys, tempfile
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 
@@ -71,8 +71,14 @@ document.getElementById('send').addEventListener('click', () => { sent.push(box.
 </script></body></html>"""
 
 def page_paste(pg, selector, text):
-    """Dispatch a paste event from the *page* world, like a browser paste does."""
-    pg.focus(selector)
+    """Paste like a user does: put the text on the clipboard, then press Ctrl+V in the field."""
+    pg.bring_to_front()
+    pg.evaluate("t => navigator.clipboard.writeText(t)", text)
+    pg.focus(selector); pg.keyboard.press("Control+V")
+    pg.wait_for_timeout(400)
+
+def synthetic_paste(pg, selector, text):
+    """A paste event made up by the page's own script (isTrusted false). PromptVeil must ignore it."""
     pg.evaluate("""([sel, text]) => { const dt = new DataTransfer(); dt.setData('text/plain', text);
         document.querySelector(sel).dispatchEvent(new ClipboardEvent('paste', {clipboardData: dt, bubbles: true, cancelable: true})); }""",
         [selector, text])
@@ -132,13 +138,24 @@ with sync_playwright() as p, tempfile.TemporaryDirectory() as prof:
     ctx = p.chromium.launch_persistent_context(prof, executable_path=CHROME, headless=False,
         args=["--headless=new", f"--disable-extensions-except={EXT}", f"--load-extension={EXT}"],
         viewport={"width": 1100, "height": 700})
+    # Everything any page, content script or the service worker logs, plus uncaught errors.
+    logs = []
+    ctx.on("console", lambda m: logs.append(m.text))
+    ctx.on("weberror", lambda e: logs.append(str(e.error)))
     ctx.route("https://chatgpt.com/**", lambda r: r.fulfill(
         body=ANSWERS_PAGE if "/c/answers" in r.request.url else COMPOSE_PAGE if "/c/compose" in r.request.url
         else TEXTAREA_PAGE, content_type="text/html"))
     ctx.route("https://claude.ai/**", lambda r: r.fulfill(body=RICH_PAGE, content_type="text/html"))
     ctx.route("https://example.com/**", lambda r: r.fulfill(body=TEXTAREA_PAGE, content_type="text/html"))
+    for origin in ["https://chatgpt.com", "https://claude.ai", "https://example.com"]:
+        ctx.grant_permissions(["clipboard-read", "clipboard-write"], origin=origin)
     sw = ctx.service_workers[0] if ctx.service_workers else ctx.wait_for_event("serviceworker")
     ext_id = sw.url.split("/")[2]
+    sw.evaluate("""() => { self.__logs = [];
+        for (const k of ['log', 'info', 'warn', 'error', 'debug']) {
+          const orig = console[k]; console[k] = (...a) => { self.__logs.push(a.map(String).join(' ')); orig.apply(console, a); }; }
+        self.addEventListener('error', e => self.__logs.push(String(e.message)));
+        self.addEventListener('unhandledrejection', e => self.__logs.push(String(e.reason && (e.reason.stack || e.reason)))); }""")
 
     # 0. Welcome page: opened once on install, with a demo that never touches the real vault.
     for _ in range(30):
@@ -152,7 +169,7 @@ with sync_playwright() as p, tempfile.TemporaryDirectory() as prof:
         scrubbed, restored = wp.inner_text("#demoScrubbed"), wp.inner_text("#demoRestored")
         check("welcome demo: scrubs the sample",
               all(x in scrubbed for x in ["[EMAIL_1]", "[PHONE_1]", "[HOST_1]", "[IP_1]", "[CARD_1]", "[API_KEY_1]"])
-              and "dana.reyes@example.com" not in scrubbed, scrubbed)
+              and not any(x in scrubbed for x in ["dana.reyes@example.com", "10.0.4.12", "415-555-0134"]), scrubbed)
         check("welcome demo: restores the drafted answer",
               "dana.reyes@example.com" in restored and "10.0.4.12" in restored and "[" not in restored, restored)
         wp.fill("#demoAnswer", "Email EMAIL_1 about [HOST_1]."); wp.dispatch_event("#demoAnswer", "input")
@@ -163,7 +180,13 @@ with sync_playwright() as p, tempfile.TemporaryDirectory() as prof:
               sw.evaluate("chrome.storage.session.get(null)"))
         wp.close()
 
-    sw.evaluate("chrome.storage.local.set({terms: ['Marcus Bell', 'Riverside Dental']})")
+    # Word lists as older versions stored them (plain text), then the migration that runs at startup.
+    sw.evaluate("chrome.storage.local.set({terms: ['Marcus Bell', 'Riverside Dental'], allow: []})")
+    sw.evaluate("migrateLists()")
+    local = sw.evaluate("chrome.storage.local.get(null)")
+    check("migration: plain-text lists encrypted, plain copy deleted",
+          "terms" not in local and "allow" not in local and local.get("lists", {}).get("mode") == "device"
+          and "Marcus" not in json.dumps(local), local)
 
     # 1. textarea (ChatGPT-style)
     pg = ctx.new_page(); pg.goto("https://chatgpt.com/c/test"); pg.wait_for_timeout(300)
@@ -199,20 +222,21 @@ with sync_playwright() as p, tempfile.TemporaryDirectory() as prof:
     # 5. sites outside the list are untouched
     pg3 = ctx.new_page(); pg3.goto("https://example.com/"); pg3.wait_for_timeout(300)
     page_paste(pg3, "#box", "bob@x.io")
-    check("non-AI site untouched", pg3.input_value("#box") == "", pg3.input_value("#box"))
+    check("non-AI site untouched (paste goes through as is)", pg3.input_value("#box") == "bob@x.io", pg3.input_value("#box"))
 
     # 6. per-site off switch
     sw.evaluate("chrome.storage.local.set({disabledSites: ['chatgpt.com']})"); pg.wait_for_timeout(200)
     pg.fill("#box", "")
     page_paste(pg, "#box", "raw@x.io")
-    check("disabled site: content script stands down", pg.input_value("#box") == "", pg.input_value("#box"))
+    check("disabled site: content script stands down (paste goes through as is)", pg.input_value("#box") == "raw@x.io", pg.input_value("#box"))
     sw.evaluate("chrome.storage.local.set({disabledSites: []})")
 
     # 7. vault lives in session storage (memory), not local storage (disk)
     local = sw.evaluate("chrome.storage.local.get(null)")
     sess = sw.evaluate("chrome.storage.session.get(null)")
     check("vault in session storage", "EMAIL_1" in sess.get("mapping", {}), sess)
-    check("no real values in local storage", "mapping" not in local and "Winter2026!" not in str(local), local)
+    check("no real values or list entries in local storage",
+          "mapping" not in local and not any(x in json.dumps(local) for x in REAL), local)
 
     # 8. popup restore
     pop = ctx.new_page(); pop.set_viewport_size({"width": 400, "height": 640})
@@ -251,6 +275,33 @@ with sync_playwright() as p, tempfile.TemporaryDirectory() as prof:
         check("content script 'copyRestored' gets a count only", r4 == {"count": 1}, r4)
         r5 = in_cs("chrome.runtime.sendMessage({type:'has', text: 'x'.repeat(1000001)})")
         check("oversized text refused", isinstance(r5, dict) and "error" in r5, r5)
+        refused = {t: in_cs(f"chrome.runtime.sendMessage({{type:'{t}', text:'[EMAIL_1]', terms: [], allow: [], password: 'x'}})")
+                   for t in ["lists.get", "lists.set", "lists.export", "lock.set", "lock.remove", "copyText", "reset", "vault", "restore"]}
+        check("content scripts may only send scrub / has / scan / copyRestored / openUnlock",
+              all(isinstance(r, dict) and r.get("error") == "not allowed" for r in refused.values()), refused)
+        bad = [in_cs("chrome.runtime.sendMessage({type:'scrub', text: 42})"), in_cs("chrome.runtime.sendMessage({type: 7})"),
+               in_cs("chrome.runtime.sendMessage(['scrub'])"), in_cs("chrome.runtime.sendMessage({type:'scrub'})")]
+        check("malformed messages refused", all(isinstance(r, dict) and "error" in r for r in bad), bad)
+
+    # The page can't use its own (synthetic) paste events to probe the vault for known values.
+    vault_before = sw.evaluate("chrome.storage.session.get('mapping')")["mapping"]
+    pg2b.evaluate("() => { document.getElementById('ed').textContent = ''; window.seen = []; }")
+    probe = "is marcus.bell@riversidedental.com known? and new.person@example.org"
+    synthetic_paste(pg2b, "#ed", probe)
+    # PromptVeil must not touch the page's own event: the vault is unchanged, and the page's paste
+    # handler gets back exactly what it sent, with no placeholder in it.
+    check("synthetic paste events from the page are ignored (no vault probing)",
+          sw.evaluate("chrome.storage.session.get('mapping')")["mapping"] == vault_before
+          and pg2b.evaluate("window.seen") == [probe] and "[EMAIL_" not in pg2b.inner_text("#ed"),
+          [pg2b.inner_text("#ed"), pg2b.evaluate("window.seen")])
+    fetched = pg2b.evaluate(f"fetch('chrome-extension://{ext_id}/popup.html').then(() => 'fetched', () => 'blocked')")
+    manifest = json.loads((ROOT / "extension" / "manifest.json").read_text())
+    check("sites can't load extension pages (no web_accessible_resources)",
+          fetched == "blocked" and "web_accessible_resources" not in manifest, fetched)
+    check("other extensions can't connect; extension-page CSP blocks network, base, forms, framing",
+          manifest.get("externally_connectable") == {"ids": []}
+          and all(d in manifest["content_security_policy"]["extension_pages"]
+                  for d in ["connect-src 'none'", "object-src 'none'", "base-uri 'none'", "form-action 'none'", "frame-ancestors 'none'"]))
 
     # 10. "Copy with real values" button on AI answers
     ctx.grant_permissions(["clipboard-read", "clipboard-write"], origin="https://example.com")
@@ -425,12 +476,282 @@ with sync_playwright() as p, tempfile.TemporaryDirectory() as prof:
         check("content script 'scan' gets counts only", isinstance(r6, dict) and r6.get("total") == 1 and "marcus" not in str(r6), r6)
     sw.evaluate("chrome.storage.local.set({guardTyped: false})")
 
+    # 14. Optional password lock for the word lists
+    PW, PW2 = "correct horse battery", "staple gun velvet"
+    lists = lambda: sw.evaluate("chrome.storage.local.get('lists')")["lists"]
+    session = lambda: sw.evaluate("chrome.storage.session.get(null)")
+    opt = ctx.new_page(); opt.goto(f"chrome-extension://{ext_id}/options.html"); opt.wait_for_timeout(300)
+    opt.on("dialog", lambda d: d.accept())
+    status_is = lambda pg, text: pg.wait_for_function(f"() => document.getElementById('lockStatus').textContent === {json.dumps(text)}", timeout=10000)
+    check("options: password lock is off by default", opt.inner_text("#lockStatus") == "Off", opt.inner_text("#lockStatus"))
+    opt.fill("#newPw", "short"); opt.fill("#newPw2", "short"); opt.click("#setGo"); opt.wait_for_timeout(300)
+    check("options: passwords under 8 characters refused", "at least 8" in opt.inner_text("#lockMsg") and lists()["mode"] == "device",
+          opt.inner_text("#lockMsg"))
+    opt.fill("#newPw", PW); opt.fill("#newPw2", PW); opt.click("#setGo"); status_is(opt, "On · unlocked")
+    l = lists()
+    check("password lock: lists re-encrypted with PBKDF2-SHA256, 600,000 iterations, 16-byte salt",
+          l["mode"] == "password" and l["kdf"]["name"] == "PBKDF2-SHA256" and l["kdf"]["iterations"] >= 600000
+          and len(base64.b64decode(l["kdf"]["salt"])) == 16 and len(base64.b64decode(l["iv"])) == 12, l)
+    check("password lock: the password is stored nowhere",
+          PW not in json.dumps(sw.evaluate("chrome.storage.local.get(null)")) + json.dumps(session()))
+    check("password lock: key kept in session memory while unlocked", "listKey" in session())
+    if iso:
+        r7 = in_cs("chrome.storage.session.get(null).then(() => 'readable', e => 'blocked')")
+        check("session storage (vault, key) is closed to content scripts", r7 == "blocked", r7)
+    iv_before = lists()["iv"]
+    sw.evaluate("saveLists({terms: ['Marcus Bell', 'Riverside Dental'], allow: []})")
+    check("password lock: fresh IV on every save", lists()["iv"] != iv_before)
+
+    opt.click("#lockNow"); status_is(opt, "On · locked")
+    check("lock: key forgotten", "listKey" not in session(), list(session()))
+    pop.reload(); pop.wait_for_timeout(400)
+    check("popup: shows 'Locked: unlock to use your custom terms'",
+          pop.is_visible("#lockBanner") and pop.inner_text("#lockBanner").endswith("Locked: unlock to use your custom terms"))
+    pop.screenshot(path=str(SHOTS / "ext_popup_locked.png"))
+    pg.bring_to_front(); pg.fill("#box", "")
+    vault_before = sw.evaluate("chrome.storage.session.get('mapping')")["mapping"]
+    page_paste(pg, "#box", "Marcus Bell at marcus.bell@riversidedental.com")
+    check("locked: the paste is blocked, nothing reaches the page or the vault",
+          pg.input_value("#box") == "" and sw.evaluate("chrome.storage.session.get('mapping')")["mapping"] == vault_before,
+          pg.input_value("#box"))
+    shown = shadow_text(pg)
+    check("locked: toast says 'PromptVeil is locked' with an Unlock button", "PromptVeil is locked" in shown and "Unlock" in shown, shown)
+    pg.screenshot(path=str(SHOTS / "ext_locked_toast.png"))
+
+    sw.evaluate("chrome.storage.local.set({guardTyped: true})"); pc.wait_for_timeout(300)
+    n_sent = len(sent(pc))
+    pc.click("#box"); pc.keyboard.type("ask Marcus Bell"); pc.wait_for_timeout(300); pc.keyboard.press("Enter"); pc.wait_for_timeout(500)
+    check("locked: the typed-text check stops the send too and offers Unlock",
+          len(sent(pc)) == n_sent and "PromptVeil is locked" in shadow_text(pc), [sent(pc), shadow_text(pc)])
+    sw.evaluate("chrome.storage.local.set({guardTyped: false})"); pc.fill("#box", "")
+
+    pg.bring_to_front()
+    with ctx.expect_page() as win:
+        click_shadow_button(pg, "Unlock")
+    uv = win.value; uv.wait_for_load_state(); uv.wait_for_timeout(400)
+    check("locked: Unlock opens the unlock view", "view=unlock" in uv.url and uv.is_visible("#unlockPw"), uv.url)
+    uv.fill("#unlockPw", "wrong password!"); uv.click("#unlockGo"); uv.wait_for_timeout(2500)
+    check("unlock: wrong password fails cleanly and stays locked",
+          uv.inner_text("#unlockMsg") == "Wrong password." and "listKey" not in session(), uv.inner_text("#unlockMsg"))
+    uv.fill("#unlockPw", PW); uv.click("#unlockGo")
+    uv.wait_for_function("() => document.getElementById('unlockMsg').textContent.startsWith('Unlocked')", timeout=10000)
+    uv.wait_for_event("close", timeout=5000)
+    pop.reload(); pop.wait_for_timeout(400)
+    check("unlock: right password unlocks the lists, and the unlock window closes itself",
+          "listKey" in session() and pop.inner_text("#termsMask").startswith("2 entries") and pop.is_hidden("#lockBanner"),
+          pop.inner_text("#termsMask"))
+    pg.fill("#box", ""); page_paste(pg, "#box", "Marcus Bell at marcus.bell@riversidedental.com")
+    check("unlocked: custom terms apply again", pg.input_value("#box") == "[TERM_2] at [EMAIL_1]", pg.input_value("#box"))
+
+    opt.reload(); status_is(opt, "On · unlocked")
+    opt.fill("#newPw", PW2); opt.fill("#newPw2", PW2); opt.click("#setGo")
+    opt.wait_for_function("() => document.getElementById('lockMsg').textContent.includes('re-encrypted')", timeout=10000)
+    salt_changed = lists()["kdf"]["salt"] != l["kdf"]["salt"]
+    opt.click("#lockNow"); status_is(opt, "On · locked")
+    opt.fill("#unlockPw", PW); opt.click("#unlockForm button"); opt.wait_for_timeout(2500)
+    old_refused = opt.inner_text("#lockMsg") == "Wrong password."
+    opt.fill("#unlockPw", PW2); opt.click("#unlockForm button"); status_is(opt, "On · unlocked")
+    check("change password: re-encrypted with a new salt; old password refused, new one works", salt_changed and old_refused)
+
+    with opt.expect_download() as dl:
+        opt.fill("#expPw", "backup pass 1"); opt.fill("#expPw2", "backup pass 1"); opt.click("#exportForm button")
+    backup = Path(dl.value.path()).read_text()
+    check("backup: encrypted file downloaded", json.loads(backup)["format"] == "promptveil-lists-backup" and "Marcus" not in backup)
+    sw.evaluate("saveLists({terms: ['changed'], allow: []})")
+    opt.set_input_files("#impFile", dl.value.path()); opt.fill("#impPw", "not the password"); opt.click("#importForm button")
+    opt.wait_for_function("() => document.getElementById('backupMsg').textContent.startsWith('Wrong')", timeout=10000)
+    check("backup: wrong password fails cleanly", opt.inner_text("#backupMsg") == "Wrong password.", opt.inner_text("#backupMsg"))
+    opt.fill("#impPw", "backup pass 1"); opt.click("#importForm button")
+    opt.wait_for_function("() => document.getElementById('backupMsg').textContent.startsWith('Imported')", timeout=10000)
+    got = sw.evaluate("listState()")["lists"]
+    check("backup: import restores the lists", got["terms"] == ["Marcus Bell", "Riverside Dental"], got)
+
+    opt.click("#removePw"); status_is(opt, "Off")
+    check("remove password: back to the device key, session key dropped, lists intact",
+          lists()["mode"] == "device" and "listKey" not in session() and sw.evaluate("listState()")["lists"]["terms"] == ["Marcus Bell", "Riverside Dental"])
+
+    opt.fill("#newPw", PW); opt.fill("#newPw2", PW); opt.click("#setGo"); status_is(opt, "On · unlocked")
+    opt.click("#lockNow"); status_is(opt, "On · locked")
+    opt.click("#resetLists"); status_is(opt, "Off")
+    check("forgot password: lists deleted, lock off", "lists" not in sw.evaluate("chrome.storage.local.get(null)")
+          and sw.evaluate("listState()")["lists"] == {"terms": [], "allow": []})
+    opt.screenshot(path=str(SHOTS / "ext_options.png"), full_page=True)
+    sw.evaluate("saveLists({terms: ['Marcus Bell', 'Riverside Dental'], allow: []})")
+
+    # Lists that can't be decrypted (the device key was wiped with the browser's site data) block
+    # pastes too, rather than scrubbing without the custom terms.
+    sw.evaluate("""async () => { await idb('readwrite', st => st.delete('device')); deviceKeyPromise = null; listsCache = null; }""")
+    pg.bring_to_front(); pg.fill("#box", "")
+    page_paste(pg, "#box", "Marcus Bell at marcus.bell@riversidedental.com")
+    shown = shadow_text(pg)
+    check("unreadable lists: paste blocked, toast offers to open PromptVeil",
+          pg.input_value("#box") == "" and "can't read your custom terms" in shown and "Open PromptVeil" in shown,
+          [pg.input_value("#box"), shown])
+    sw.evaluate("chrome.storage.local.remove('lists')")
+    sw.evaluate("saveLists({terms: ['Marcus Bell', 'Riverside Dental'], allow: []})")
+
+    # 15. Auto-clear and auto-lock. The alarm and idle handlers are called directly (Chrome won't
+    # fire a 60-minute alarm or a screen lock on demand); their scheduling is checked as set up.
+    alarm = lambda: sw.evaluate("chrome.alarms.get('pv-idle')")
+    now = lambda: sw.evaluate("Date.now()")
+    a = alarm()
+    check("idle: vault auto-clear armed for 60 minutes by default",
+          a is not None and now() + 55 * 60000 <= a["scheduledTime"] <= now() + 60 * 60000, a)
+    opt.select_option("#idleMinutes", "15"); opt.wait_for_timeout(400)
+    a = alarm()
+    check("idle: changing the setting re-arms the alarm",
+          a is not None and abs(a["scheduledTime"] - (now() + 15 * 60000)) < 60000, a)
+    opt.select_option("#idleMinutes", "0"); opt.wait_for_timeout(400)
+    check("idle: 'Never' removes the alarm", alarm() is None, alarm())
+    opt.select_option("#idleMinutes", "60"); opt.wait_for_timeout(400)
+
+    sw.evaluate(f"onIdleState('locked')")
+    check("computer locked, no password: lists stay usable", sw.evaluate("listState()")["lists"] is not None)
+    sw.evaluate(f"setPassword({json.dumps(PW)})")
+    sw.evaluate("onIdleState('locked')")
+    check("computer locked: PromptVeil locks in password mode", sw.evaluate("listState()")["locked"] is True)
+    sw.evaluate(f"unlock({json.dumps(PW)})")
+    sw.evaluate("chrome.storage.local.set({idleMinutes: 0})"); opt.wait_for_timeout(300)
+    sw.evaluate("onIdleState('idle')")
+    idle_never_ok = sw.evaluate("listState()")["locked"] is False
+    sw.evaluate("chrome.storage.local.set({idleMinutes: 60})"); opt.wait_for_timeout(300)
+    sw.evaluate("onIdleState('idle')")
+    check("computer idle: locks when a timeout is set, not when it's 'Never'",
+          idle_never_ok and sw.evaluate("listState()")["locked"] is True)
+    sw.evaluate(f"unlock({json.dumps(PW)})")
+
+    # 16. Real values hidden on screen by default (popup). Playwright's fake clock skips the 30 s timers.
+    pv = ctx.new_page(); pv.set_viewport_size({"width": 400, "height": 600})
+    pv.clock.install()
+    pv.goto(f"chrome-extension://{ext_id}/popup.html"); pv.wait_for_timeout(400)
+    blur = lambda: pv.evaluate("getComputedStyle(document.getElementById('restoreOut')).filter")
+    pv.fill("#restoreIn", ANSWER); pv.dispatch_event("#restoreIn", "input"); pv.wait_for_timeout(300)
+    check("restore view: restored output is blurred", "blur" in blur() and pv.inner_text("#restoreOut") == RESTORED, blur())
+    pv.screenshot(path=str(SHOTS / "ext_popup_blurred.png"))
+    pv.hover("#restoreOut"); pv.wait_for_timeout(200)
+    hovered = blur()
+    pv.mouse.move(5, 5); pv.wait_for_timeout(200)
+    check("restore view: hovering shows it, moving away blurs it again", hovered == "none" and "blur" in blur(), [hovered, blur()])
+    pv.click("#restoreShow"); pv.mouse.move(5, 5); pv.wait_for_timeout(200)
+    shown_ok = blur() == "none"
+    pv.clock.run_for(31000); pv.wait_for_timeout(200)
+    check("restore view: Show reveals it, and it blurs again after 30 s", shown_ok and "blur" in blur(), blur())
+    pg3.evaluate("t => navigator.clipboard.writeText(t)", "sentinel")
+    pv.bring_to_front(); pv.click("#restoreCopy"); pv.mouse.move(5, 5); pv.wait_for_timeout(400)
+    got = clipboard(pg3)
+    check("restore view: Copy works without revealing", got == RESTORED and "blur" in blur(), repr(got))
+
+    pv.bring_to_front(); pv.click("nav button[data-tab=vault]"); pv.wait_for_timeout(300)
+    vault_text = lambda: pv.inner_text("#vault")
+    check("vault tab: every value masked", not any(r in vault_text() for r in REAL), vault_text())
+    pv.locator("#vault tr", has_text="EMAIL_1").locator("button").click(); pv.wait_for_timeout(100)
+    check("vault tab: Show reveals only that row",
+          "marcus.bell@riversidedental.com" in vault_text() and sum(r in vault_text() for r in REAL) == 1, vault_text())
+    pv.clock.run_for(31000); pv.wait_for_timeout(200)
+    check("vault tab: the value is masked again after 30 s", not any(r in vault_text() for r in REAL), vault_text())
+
+    pv.click("nav button[data-tab=settings]"); pv.wait_for_timeout(300)
+    in_page = lambda: pv.evaluate("document.body.innerText + document.getElementById('terms').value + document.getElementById('allow').value")
+    check("settings: lists shown as a count plus dots, entries not in the page",
+          pv.inner_text("#termsMask").startswith("2 entries ••") and "Marcus" not in in_page(), pv.inner_text("#termsMask"))
+    pv.screenshot(path=str(SHOTS / "ext_popup_settings_masked.png"))
+    pv.click("#listsToggle"); pv.wait_for_timeout(400)
+    check("settings: Show and edit reveals the lists", pv.input_value("#terms") == "Marcus Bell\nRiverside Dental", pv.input_value("#terms"))
+    pv.fill("#allow", "support@example.com"); pv.wait_for_timeout(100)
+    pv.clock.run_for(31000); pv.wait_for_timeout(600)
+    check("settings: lists hide again after 30 s, entries taken out of the page, edits saved",
+          pv.is_hidden("#terms") and "Marcus" not in in_page() and pv.inner_text("#allowMask").startswith("1 entry")
+          and sw.evaluate("listState()")["lists"]["allow"] == ["support@example.com"], in_page())
+    sw.evaluate("saveLists({terms: ['Marcus Bell', 'Riverside Dental'], allow: []})")
+    pv.close()
+
     # Last, because it empties the vault: starting a new session removes the buttons.
     pop.click("nav button[data-tab=vault]"); pop.click("#reset"); pa.wait_for_timeout(1500)
     check("button: removed when the vault is reset", pa.locator("promptveil-copy").count() == 0,
           pa.locator("promptveil-copy").count())
 
+    # The idle alarm firing: clears the vault (buttons go away) and locks in password mode.
+    pg.bring_to_front(); pg.fill("#box", ""); page_paste(pg, "#box", "Ping 10.1.2.3 about it")
+    pa.evaluate("t => stream(t)", "Fixed [IP_1] now.")
+    pa.wait_for_selector("promptveil-copy", state="attached", timeout=5000)
+    vault_had = sw.evaluate("chrome.storage.session.get('mapping')")["mapping"] != {}
+    sw.evaluate("onAlarm({name: 'pv-idle'})"); pa.wait_for_timeout(1500)
+    check("idle alarm: vault cleared, buttons removed, lists locked",
+          vault_had and sw.evaluate("chrome.storage.session.get('mapping')")["mapping"] == {}
+          and pa.locator("promptveil-copy").count() == 0 and sw.evaluate("listState()")["locked"] is True,
+          [vault_had, pa.locator("promptveil-copy").count()])
+
+    # 16b. Clipboard auto-clear: clipboardRead is optional and not granted at install.
+    manifest = json.loads((ROOT / "extension" / "manifest.json").read_text())
+    check("clipboardRead is optional, not requested at install",
+          "clipboardRead" in manifest.get("optional_permissions", []) and "clipboardRead" not in manifest["permissions"]
+          and sw.evaluate("chrome.permissions.contains({permissions: ['clipboardRead']})") is False)
+    opt.bring_to_front(); opt.reload(); opt.wait_for_timeout(300)
+    opt.evaluate("() => { chrome.permissions.request = async () => false; }")  # the user clicks "Deny"
+    opt.click('input[name="clip"][value="60"]'); opt.wait_for_timeout(300)
+    check("auto-clear: declining the permission leaves it off and says why",
+          opt.is_checked('input[name="clip"][value="0"]') and "needs permission to read the clipboard" in opt.inner_text("#clipMsg")
+          and sw.evaluate("chrome.storage.local.get({clipboardClearSeconds: 0})")["clipboardClearSeconds"] == 0, opt.inner_text("#clipMsg"))
+    sw.evaluate("chrome.storage.local.set({clipboardClearSeconds: 60})")
+    sw.evaluate("chrome.storage.session.set({mapping: {EMAIL_1: 'jo@example.org'}})")  # the vault was just cleared
+    copied = sw.evaluate("restoreToClipboard('mail [EMAIL_1]')")
+    check("auto-clear: nothing scheduled without the permission (the copy itself still works)",
+          copied == {"count": 1} and sw.evaluate("chrome.alarms.get('pv-clip')") is None and "clipHash" not in session(), copied)
+    sw.evaluate("chrome.storage.local.set({clipboardClearSeconds: 0})")
+
+    # 17. No real value in console output, errors, the toolbar badge or tooltip, or page titles.
+    pg3.evaluate("console.log('probe-page')"); sw.evaluate("console.log('probe-sw')"); pg3.wait_for_timeout(200)
+    sw_logs = sw.evaluate("self.__logs")
+    everything = "\n".join(logs + sw_logs)
+    check("log capture works (probes seen)", "probe-page" in logs and "probe-sw" in sw_logs)
+    check("no real value in console output or errors (pages, content scripts, service worker)",
+          not any(r in everything for r in REAL), [r for r in REAL if r in everything])
+    badges = sw.evaluate("""async () => { const out = [];
+        for (const t of await chrome.tabs.query({})) out.push(await chrome.action.getBadgeText({tabId: t.id}), await chrome.action.getTitle({tabId: t.id}));
+        return out; }""")
+    titles = [x.title() for x in ctx.pages]
+    check("no real value in badges, tooltips or page titles", not any(r in "|".join(badges + titles) for r in REAL), badges + titles)
+
     ctx.close()
+
+    # 18. Clipboard auto-clear with the permission granted. Chrome's permission prompt can't be
+    # answered from Playwright, so this uses a copy of the extension where clipboardRead is a
+    # required permission (granted at install) instead of an optional one.
+    with tempfile.TemporaryDirectory() as prof2, tempfile.TemporaryDirectory() as ext2:
+        shutil.copytree(EXT, ext2, dirs_exist_ok=True)
+        m = json.loads(Path(ext2, "manifest.json").read_text())
+        m["permissions"].append("clipboardRead"); m.pop("optional_permissions")
+        Path(ext2, "manifest.json").write_text(json.dumps(m))
+        ctx2 = p.chromium.launch_persistent_context(prof2, executable_path=CHROME, headless=False,
+            args=["--headless=new", f"--disable-extensions-except={ext2}", f"--load-extension={ext2}"])
+        ctx2.route("https://example.com/**", lambda r: r.fulfill(body=TEXTAREA_PAGE, content_type="text/html"))
+        ctx2.grant_permissions(["clipboard-read", "clipboard-write"], origin="https://example.com")
+        sw2 = ctx2.service_workers[0] if ctx2.service_workers else ctx2.wait_for_event("serviceworker")
+        id2 = sw2.url.split("/")[2]
+        plain2 = ctx2.new_page(); plain2.goto("https://example.com/")
+        o2 = ctx2.new_page(); o2.goto(f"chrome-extension://{id2}/options.html"); o2.wait_for_timeout(300)
+        o2.click('input[name="clip"][value="60"]')
+        o2.wait_for_function("() => document.getElementById('clipMsg').textContent.startsWith('On')", timeout=5000)
+        check("auto-clear: turned on once the permission is granted",
+              sw2.evaluate("chrome.storage.local.get('clipboardClearSeconds')")["clipboardClearSeconds"] == 60)
+        sw2.evaluate("chrome.storage.session.set({mapping: {EMAIL_1: 'jo@example.org'}})")
+        sw2.evaluate("restoreToClipboard('mail [EMAIL_1]')")
+        a = sw2.evaluate("chrome.alarms.get('pv-clip')"); t = sw2.evaluate("Date.now()")
+        check("auto-clear: alarm set 60 s after copying, only a hash kept",
+              a is not None and abs(a["scheduledTime"] - (t + 60000)) < 5000
+              and "jo@example.org" not in json.dumps(sw2.evaluate("chrome.storage.session.get('clipHash')")), a)
+        before = clipboard(plain2)
+        r = sw2.evaluate("onAlarm({name: 'pv-clip'})")
+        after = clipboard(plain2)
+        check("auto-clear: clears the clipboard when it still holds the copy",
+              before == "mail jo@example.org" and r == {"cleared": True} and after == "", [before, r, after])
+        sw2.evaluate("restoreToClipboard('mail [EMAIL_1]')")
+        plain2.evaluate("t => navigator.clipboard.writeText(t)", "something the user copied later")
+        r = sw2.evaluate("onAlarm({name: 'pv-clip'})")
+        after = clipboard(plain2)
+        check("auto-clear: leaves the clipboard alone if something else was copied since",
+              r == {"cleared": False} and after == "something the user copied later", [r, after])
+        ctx2.close()
 
 print(f"\n{len(failures)} failure(s)")
 sys.exit(1 if failures else 0)
