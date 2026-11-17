@@ -42,7 +42,7 @@ python3 tests/extension_e2e.py       # 16 checks in real Chrome (needs playwrigh
 
 | | Web page (`web/index.html`) | CLI (`promptveil`) |
 |---|---|---|
-| Where it runs | In your browser, single static file | Your terminal, Python 3.9+, zero dependencies |
+| Where it runs | In your browser, single static file | Your terminal, Python 3.10+, zero dependencies |
 | Network | None. A strict CSP blocks every request | None |
 | Mapping stored | In memory only; closing the tab erases it | `~/.local/share/promptveil/vault.json` (0600) |
 | Best for | Quick copy/paste, sharing with non-technical people | Pipelines, clipboard workflows, pre-commit / CI scanning |
