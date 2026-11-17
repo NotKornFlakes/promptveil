@@ -32,8 +32,8 @@ and the command-line tool.
   - If you turn on **Lock with a password**, the key is derived from your password (PBKDF2-SHA256, 600,000
     iterations, random salt) and kept only in memory while PromptVeil is unlocked. Your password is never stored.
     PromptVeil locks when you choose, after the idle time, when your computer locks or goes idle, and when the
-    browser closes. While locked, pastes are still scrubbed with the built-in rules. There is no password
-    recovery.
+    browser closes. While locked, pastes on the AI sites are blocked until you unlock, so nothing is sent without
+    your custom terms being applied. There is no password recovery.
   - A backup you export is encrypted with the backup password you choose.
   - Earlier versions stored these lists in plain text. Updating encrypts them and deletes the plain copy, although
     Chrome may keep old fragments in its storage files until it compacts them.

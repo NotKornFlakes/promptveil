@@ -18,6 +18,10 @@ keeps is protected, and how to report a vulnerability.
   The word lists are encrypted; the placeholder vault is never written to disk.
 - **With "Lock with a password": someone with a copy of your profile files** reading your word lists, unless they
   can guess the password. PBKDF2 slows guessing down; a weak password can still be cracked offline.
+- **Pasting while locked.** While the lists are locked, or can't be decrypted, every paste on the AI sites is
+  blocked (fail closed) and a "PromptVeil is locked" notice offers an Unlock button. Nothing is scrubbed without
+  your custom terms, so a name from your "Always hide" list can't slip through. With the optional typed-text check
+  on, sending is stopped the same way (sending again sends as is, as with any typed-text warning).
 - **Shoulder-surfing and screen sharing.** Real values are masked or blurred in PromptVeil's pages until you
   choose to show them, and hide again after 30 seconds.
 - **Data left lying around.** The vault is cleared after an idle timeout and when the browser closes; with a
@@ -60,7 +64,7 @@ keeps is protected, and how to report a vulnerability.
 | Placeholder vault (placeholder → real value) | `chrome.storage.session` | Memory only, never on disk. Cleared after the idle timeout (default 60 min), with **New session**, and when the browser closes. Readable only by trusted extension contexts (`setAccessLevel(TRUSTED_CONTEXTS)` is set at startup). |
 | "Always hide" / "Never hide" lists | `chrome.storage.local` (profile folder) | One AES-256-GCM blob, fresh random 12-byte IV on every save. The additional authenticated data binds the format version and mode. |
 | Device key (default mode) | IndexedDB of the extension's origin | Random AES-256-GCM key, generated on first use, non-extractable (scripts can use it but can't read its bytes). On disk in the same profile, so this only stops casual reading. |
-| Password-derived key (password mode) | `chrome.storage.session` while unlocked | PBKDF2-SHA256, 600,000 iterations, random 16-byte salt (stored next to the ciphertext). The password itself is never stored. The key is dropped on lock, after the idle timeout, when the computer locks or goes idle, and when the browser closes. It is only written after session storage has been restricted to trusted contexts. |
+| Password-derived key (password mode) | `chrome.storage.session` while unlocked | PBKDF2-SHA256, 600,000 iterations, random 16-byte salt (stored next to the ciphertext). The password itself is never stored. The key is dropped on lock, after the idle timeout, when the computer locks or goes idle, and when the browser closes. It is only written after session storage has been restricted to trusted contexts. While it's dropped, pastes on the AI sites are blocked. |
 | Backup file (export) | Wherever you save it | AES-256-GCM with a key from your backup password (PBKDF2-SHA256, 600,000 iterations, its own 16-byte salt). |
 | Clipboard auto-clear state | `chrome.storage.session` | A SHA-256 of the text PromptVeil copied, used to check the clipboard still holds it before clearing. Off by default; needs the optional `clipboardRead` permission, requested only when you turn it on. |
 | Settings (per-site on/off, typed-text check, timeouts) | `chrome.storage.local` | Plain text. They contain no personal data. |
@@ -95,9 +99,10 @@ rather than writing the vault in plain text or handing out text that could never
 - **AI site page:** untrusted. It can't reach the extension's messaging API. Paste events it dispatches itself are
   ignored, so it can't use the scrubber to test guesses against the vault.
 - **Content script** (isolated world on the 8 AI sites): may send only `scrub`, `has` (yes/no), `scan` (counts,
-  only when the typed-text check is on) and `copyRestored` (count only, sent only after a trusted click on
-  PromptVeil's own button). The service worker checks that these come from a tab on one of the AI sites.
-  Text is capped at 1,000,000 characters.
+  only when the typed-text check is on), `copyRestored` (count only, sent only after a trusted click on
+  PromptVeil's own button) and `openUnlock` (no data in or out; opens PromptVeil's unlock window, sent only after
+  a trusted click on the "PromptVeil is locked" notice). The service worker checks that these come from a tab on
+  one of the AI sites. Text is capped at 1,000,000 characters. While locked, `scrub` and `scan` are refused.
 - **Service worker:** owns the vault, the lists and the keys. Everything that returns real values or changes
   keys is refused unless the sender is one of PromptVeil's own pages.
 - **Offscreen document:** writes and clears the clipboard; accepts messages only from the service worker.

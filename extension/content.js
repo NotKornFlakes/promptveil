@@ -123,12 +123,24 @@
     chrome.runtime.sendMessage({ type: "scrub", text }).then(r => {
       if (!r || r.error) throw new Error(r && r.error);
       insert(target, origin, r.text);
-      const lockedNote = r.locked ? " · custom terms locked" : "";
-      if (r.total) toast(`Hid ${r.total} item${r.total === 1 ? "" : "s"}`, r.counts.map(c => `${c.n} ${c.label}`).join(" · ") + lockedNote);
-      else if (r.locked) toast("Nothing hidden", "Your custom terms are locked: open PromptVeil to unlock them.", true);
-    }).catch(() => {
-      toast("Paste blocked", "PromptVeil couldn't scrub this text. Reload the page, or turn PromptVeil off for this site.", true);
+      if (r.total) toast(`Hid ${r.total} item${r.total === 1 ? "" : "s"}`, r.counts.map(c => `${c.n} ${c.label}`).join(" · "));
+    }).catch(err => {
+      if (!lockedToast(err, "Paste blocked. Unlock to scrub with your custom terms, then paste again.")) {
+        toast("Paste blocked", "PromptVeil couldn't scrub this text. Reload the page, or turn PromptVeil off for this site.", true);
+      }
     });
+  }
+
+  // While the custom terms are locked (password mode) or can't be decrypted, the service worker
+  // refuses to scrub, so pastes are blocked. The toast's button opens PromptVeil's unlock view.
+  // Returns false if `err` isn't one of those.
+  function lockedToast(err, detail) {
+    const why = err && err.message;
+    if (why !== "locked" && why !== "unreadable") return false;
+    const open = () => chrome.runtime.sendMessage({ type: "openUnlock" }).catch(() => {});
+    if (why === "locked") toast("PromptVeil is locked", detail, true, { label: "Unlock", run: open });
+    else toast("PromptVeil can't read your custom terms", "Blocked: their key is gone. Open PromptVeil to fix it.", true, { label: "Open PromptVeil", run: open });
+    return true;
   }
   window.addEventListener("paste", onPaste, true);
 
@@ -275,7 +287,8 @@
     if (lastScan.text === text && (lastScan.result || lastScan.pending)) return lastScan.pending || Promise.resolve(lastScan.result);
     const entry = { text, result: null, pending: null };
     entry.pending = chrome.runtime.sendMessage({ type: "scan", text }).then(r => {
-      if (!r || r.error || typeof r.total !== "number" || !Array.isArray(r.counts)) throw new Error("scan failed");
+      if (r && r.error) throw new Error(r.error);
+      if (!r || typeof r.total !== "number" || !Array.isArray(r.counts)) throw new Error("scan failed");
       entry.result = r;
       entry.pending = null;
       return r;
@@ -324,9 +337,11 @@
       if (boxText(box) !== text) return; // you kept typing
       if (r.total) offerHide(box, text, r);
       else resend();
-    }, () => {
+    }, err => {
       allowOnce = text;
-      toast("Couldn't check this message", "PromptVeil stopped it. Send again to send it as is.", true);
+      if (!lockedToast(err, "Not sent. Unlock to check it with your custom terms, or send again to send it as is.")) {
+        toast("Couldn't check this message", "PromptVeil stopped it. Send again to send it as is.", true);
+      }
     });
   }
 
@@ -334,7 +349,8 @@
     if (!box.isConnected) return;
     const text = boxText(box);
     chrome.runtime.sendMessage({ type: "scrub", text }).then(r => {
-      if (!r || r.error || typeof r.text !== "string") throw new Error("scrub failed");
+      if (r && r.error) throw new Error(r.error);
+      if (!r || typeof r.text !== "string") throw new Error("scrub failed");
       // Select everything in the box and put the scrubbed text in its place, the same way a
       // paste is inserted, so the site's editor updates its own state.
       box.focus();
@@ -349,8 +365,10 @@
       insert(box, box, r.text);
       allowOnce = null;
       toast(`Hid ${r.total} item${plural(r.total)}`, `${countsText(r.counts)}. Review it, then send.`);
-    }).catch(() => {
-      toast("Couldn't hide", "Nothing was sent. Edit the message, or turn PromptVeil off for this site.", true);
+    }).catch(err => {
+      if (!lockedToast(err, "Nothing was sent. Unlock, then try again.")) {
+        toast("Couldn't hide", "Nothing was sent. Edit the message, or turn PromptVeil off for this site.", true);
+      }
     });
   }
 
@@ -389,7 +407,7 @@
        background:#0d1117;color:#e6edf3;border:1px solid #2a333f;border-left:4px solid #4fd1a5;border-radius:10px;
        padding:10px 14px;box-shadow:0 8px 24px rgba(0,0,0,.35);opacity:0;transform:translateY(8px);transition:.18s;pointer-events:none}
     .t.show{opacity:1;transform:none}.t.bad{border-left-color:#ff7b72}.t.act.show{pointer-events:auto}
-    b{display:block;font-size:13.5px}span{color:#8b98a7}
+    b{display:block;font-size:13.5px}span{display:block;color:#8b98a7}
     button{display:none;margin-top:8px;font:600 12.5px system-ui,sans-serif;color:#06261b;background:#4fd1a5;
        border:0;border-radius:7px;padding:6px 11px;cursor:pointer}
     .t.act button{display:inline-block}button:focus-visible{outline:2px solid #e6edf3;outline-offset:2px}`;
@@ -419,7 +437,7 @@
       root.append(style, box);
     }
     if (!toastHost.isConnected) (document.body || document.documentElement).appendChild(toastHost);
-    titleEl.textContent = "🛡 PromptVeil · " + title;
+    titleEl.textContent = "🛡 " + (title.startsWith("PromptVeil") ? title : "PromptVeil · " + title);
     detailEl.textContent = detail;
     toastAction = action ? action.run : null;
     actionEl.textContent = action ? action.label : "";

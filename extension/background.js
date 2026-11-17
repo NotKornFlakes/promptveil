@@ -3,10 +3,10 @@
  * memory only, never written to disk, wiped when the browser closes.
  * Owns the word lists ("Always hide" / "Never hide"), stored encrypted in chrome.storage.local
  * (see crypto.js). In password mode the derived key is kept only in chrome.storage.session while
- * unlocked; while locked, scrubbing still works with the built-in detectors.
+ * unlocked; while locked, scrubbing is refused, so pastes on the AI sites are blocked (fail closed).
  * Content scripts may ask for scrubbing, a yes/no "does this text contain known placeholders?",
- * a count-only scan of typed text, and "restore this and put it on the clipboard" (they get back
- * a count, never the text). Restored text only ever exists in extension contexts: this worker,
+ * a count-only scan of typed text, "restore this and put it on the clipboard" (they get back
+ * a count, never the text), and "open the unlock window". Restored text only ever exists in extension contexts: this worker,
  * the offscreen clipboard document and PromptVeil's own pages. It is never put back into an AI
  * site's page.
  */
@@ -216,13 +216,27 @@ function checkPassword(password) {
   if (password.length > 1024) throw new Error("password too long");
 }
 
-// Scrubbing settings. While locked (or undecryptable) the custom lists are left out, so the
-// built-in detectors still run. The allow list is left out too, so more is hidden, never less.
+// Scrubbing settings. `blocked` is set while the lists are locked ("locked") or can't be
+// decrypted ("unreadable"): scrubbing without the user's custom terms could let them through, so
+// pastes are blocked instead (fail closed).
 async function settings() {
   const plain = await chrome.storage.local.get(DEFAULTS);
   const st = await listState();
-  return { ...plain, terms: st.lists ? st.lists.terms : [], allow: st.lists ? st.lists.allow : [], locked: !st.lists };
+  return { ...plain, terms: st.lists ? st.lists.terms : [], allow: st.lists ? st.lists.allow : [],
+           blocked: st.locked ? "locked" : st.broken ? "unreadable" : null };
 }
+
+// The unlock view: the popup in a small window. Content scripts can't open extension pages, so
+// the toast's Unlock button asks for it. One window at a time.
+let unlockWindowId = null;
+async function openUnlock() {
+  if (unlockWindowId !== null) {
+    try { await chrome.windows.update(unlockWindowId, { focused: true }); return; } catch (_) { unlockWindowId = null; }
+  }
+  const w = await chrome.windows.create({ url: "popup.html?view=unlock&window=1", type: "popup", width: 440, height: 640 });
+  unlockWindowId = w.id;
+}
+chrome.windows.onRemoved.addListener(id => { if (id === unlockWindowId) unlockWindowId = null; });
 async function getMapping() {
   return (await chrome.storage.session.get({ mapping: {} })).mapping;
 }
@@ -368,14 +382,15 @@ async function handle(msg, sender) {
       const text = textOf(msg);
       const r = await serial(async () => {
         const s = await settings();
+        if (s.blocked) throw new Error(s.blocked); // never scrub without the custom terms
         const before = await getMapping();
         const v = new Veil({ mapping: before, terms: s.terms, allow: s.allow });
         const out = v.scrub(text);
         await chrome.storage.session.set({ mapping: v.mapping });
-        return { out, locked: s.locked, grew: Object.keys(v.mapping).length > Object.keys(before).length };
+        return { out, grew: Object.keys(v.mapping).length > Object.keys(before).length };
       });
       if (r.grew) vaultChanged();
-      return { text: r.out.text, total: r.out.findings.length, counts: summarize(r.out.findings), locked: r.locked };
+      return { text: r.out.text, total: r.out.findings.length, counts: summarize(r.out.findings) };
     }
 
     case "scan": {
@@ -383,6 +398,7 @@ async function handle(msg, sender) {
       const text = textOf(msg);
       const s = await settings();
       if (!s.guardTyped) throw new Error("typed-text check is off");
+      if (s.blocked) throw new Error(s.blocked);
       const findings = new Veil({ terms: s.terms, allow: s.allow }).find(text);
       return { total: findings.length, counts: summarize(findings) };
     }
@@ -396,6 +412,12 @@ async function handle(msg, sender) {
     case "copyRestored":
       // The content script sends this only after a trusted click on its own button.
       return restoreToClipboard(textOf(msg));
+
+    case "openUnlock":
+      // No data in or out: opens PromptVeil's own unlock view. Sent only after a trusted click
+      // on the "PromptVeil is locked" toast's Unlock button.
+      await openUnlock();
+      return { ok: true };
   }
 
   // Everything below is for PromptVeil's own pages only.

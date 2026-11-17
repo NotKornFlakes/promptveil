@@ -104,7 +104,11 @@
   // ---------------------------------------------------------------- scrub (manual)
   let scrubbed = "";
   $("scrubGo").addEventListener("click", async () => {
-    const r = await send({ type: "scrub", text: $("scrubIn").value });
+    let r;
+    try { r = await send({ type: "scrub", text: $("scrubIn").value }); } catch (e) {
+      $("scrubMeta").textContent = e.message === "locked" ? "Locked: unlock first (Settings)" : "Couldn't scrub";
+      return;
+    }
     scrubbed = r.text;
     const { mapping } = await send({ type: "vault" });
     // Re-render with highlights (placeholders are already consistent with the vault).
@@ -166,7 +170,7 @@
     $("unlockForm").hidden = !st.locked;
     if (st.broken) {
       $("lockedTitle").textContent = "Your custom lists can't be decrypted";
-      $("lockedText").textContent = "Their key is gone (browser data was cleared). Pastes are still scrubbed with the built-in rules. Delete the lists under Password & backup to start over.";
+      $("lockedText").textContent = "Their key is gone (browser data was cleared). Pastes on the AI sites are blocked until you delete the lists under Password & backup.";
     }
     if (usable) counts = { terms: st.terms.length, allow: st.allow.length };
     drawMasks();
@@ -218,6 +222,10 @@
     try {
       await send({ type: "lock.unlock", password: $("unlockPw").value });
       $("unlockMsg").textContent = "";
+      if (params.get("view") === "unlock") { // opened from the "PromptVeil is locked" notice
+        $("unlockMsg").textContent = "Unlocked. You can paste again.";
+        setTimeout(() => window.close(), 1500);
+      }
     } catch (_) {
       $("unlockMsg").textContent = "Wrong password.";
     }
@@ -229,6 +237,12 @@
     await send({ type: "lock.lock" });
     loadLists();
   });
+
+  // ---------------------------------------------------------------- opened from the "locked" notice
+  if (params.get("view") === "unlock") {
+    show("settings");
+    $("unlockPw").focus();
+  }
 
   // ---------------------------------------------------------------- opened from right-click menu
   if (params.get("view") === "restore") {

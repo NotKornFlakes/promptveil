@@ -13,7 +13,8 @@
     $("lockStatus").textContent = !on ? "Off" : st.locked ? "On · locked" : "On · unlocked";
     $("lockExplain").textContent = on
       ? "Your lists are encrypted with a key made from your password. The key is kept in memory only while unlocked, and is " +
-        "forgotten when you lock, after the idle timeout, or when the browser closes."
+        "forgotten when you lock, after the idle timeout, or when the browser closes. While locked, pastes on the AI sites " +
+        "are blocked, so nothing goes through without your custom terms."
       : "Your lists are encrypted with a random key stored in this browser profile. That stops casual reading of the " +
         "profile files, not someone with full access to this computer. Add a password for stronger protection.";
     $("setForm").hidden = on && st.locked;

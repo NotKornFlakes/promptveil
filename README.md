@@ -48,8 +48,9 @@ How it stays private:
   anyone browsing your profile files, not from someone with full access to your computer. For more, turn on
   **Lock with a password** on the settings page: the key is then derived from your password (PBKDF2-SHA256,
   600,000 iterations) and kept in memory only while unlocked. PromptVeil locks on idle, when your computer locks,
-  and when the browser closes. While locked, pastes are still scrubbed with the built-in rules. There's no
-  password recovery; you can export an encrypted backup of the lists.
+  and when the browser closes. While locked, every paste on the AI sites is blocked and a "PromptVeil is locked"
+  notice offers an **Unlock** button, so nothing goes through without your custom terms. There's no password
+  recovery; you can export an encrypted backup of the lists.
 - Real values in PromptVeil's own windows are masked or blurred until you choose to show them, and hide again
   after 30 seconds. Optionally, the clipboard is cleared 30 seconds to 2 minutes after PromptVeil copies real
   values, if it still holds what PromptVeil copied (needs permission to read the clipboard, asked only when you
@@ -71,7 +72,7 @@ A welcome page with a try-it box opens on install.
 
 ```bash
 python3 scripts/build_extension.py   # syncs engine.js from web/index.html, writes dist/*.zip
-# 118 checks in real Chrome (needs playwright). Branded Chrome 137+ ignores --load-extension,
+# 121 checks in real Chrome (needs playwright). Branded Chrome 137+ ignores --load-extension,
 # so point CHROME at Chrome for Testing (e.g. the one `playwright install chromium` downloads).
 CHROME=/path/to/chrome-for-testing python3 tests/extension_e2e.py
 ```
