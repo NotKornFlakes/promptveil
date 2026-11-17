@@ -139,6 +139,30 @@ with sync_playwright() as p, tempfile.TemporaryDirectory() as prof:
     ctx.route("https://example.com/**", lambda r: r.fulfill(body=TEXTAREA_PAGE, content_type="text/html"))
     sw = ctx.service_workers[0] if ctx.service_workers else ctx.wait_for_event("serviceworker")
     ext_id = sw.url.split("/")[2]
+
+    # 0. Welcome page: opened once on install, with a demo that never touches the real vault.
+    for _ in range(30):
+        welcome = [pg for pg in ctx.pages if pg.url == f"chrome-extension://{ext_id}/welcome.html"]
+        if welcome: break
+        ctx.pages[0].wait_for_timeout(100)
+    check("welcome page opens once on install", len(welcome) == 1, [pg.url for pg in ctx.pages])
+    if welcome:
+        wp = welcome[0]; wp.wait_for_load_state(); wp.set_viewport_size({"width": 900, "height": 1400})
+        wp.click("#sample"); wp.wait_for_timeout(200)
+        scrubbed, restored = wp.inner_text("#demoScrubbed"), wp.inner_text("#demoRestored")
+        check("welcome demo: scrubs the sample",
+              all(x in scrubbed for x in ["[EMAIL_1]", "[PHONE_1]", "[HOST_1]", "[IP_1]", "[CARD_1]", "[API_KEY_1]"])
+              and "dana.reyes@example.com" not in scrubbed, scrubbed)
+        check("welcome demo: restores the drafted answer",
+              "dana.reyes@example.com" in restored and "10.0.4.12" in restored and "[" not in restored, restored)
+        wp.fill("#demoAnswer", "Email EMAIL_1 about [HOST_1]."); wp.dispatch_event("#demoAnswer", "input")
+        check("welcome demo: restores an edited answer",
+              wp.inner_text("#demoRestored") == "Email dana.reyes@example.com about db01.corp.", wp.inner_text("#demoRestored"))
+        wp.screenshot(path=str(SHOTS / "ext_welcome.png"), full_page=True)
+        check("welcome demo: real vault untouched", sw.evaluate("chrome.storage.session.get(null)").get("mapping", {}) == {},
+              sw.evaluate("chrome.storage.session.get(null)"))
+        wp.close()
+
     sw.evaluate("chrome.storage.local.set({terms: ['Marcus Bell', 'Riverside Dental']})")
 
     # 1. textarea (ChatGPT-style)

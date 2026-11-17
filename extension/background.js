@@ -167,7 +167,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 const MENU_COPY = "pv-restore";
 const MENU_VIEW = "pv-restore-view";
 
-chrome.runtime.onInstalled.addListener(async () => {
+chrome.runtime.onInstalled.addListener(async details => {
+  // First install only (not updates): show how it works, with a demo box.
+  if (details.reason === "install") chrome.tabs.create({ url: "welcome.html" }).catch(() => {});
   await chrome.contextMenus.removeAll();
   chrome.contextMenus.create({ id: MENU_COPY, title: "Restore real values with PromptVeil", contexts: ["selection"] });
   chrome.contextMenus.create({ id: MENU_VIEW, title: "Restore and view…", contexts: ["selection"] });

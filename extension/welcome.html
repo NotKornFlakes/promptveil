@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Welcome to PromptVeil</title>
+<style>
+  :root{--bg:#0d1117;--panel:#151b23;--panel2:#1b222c;--line:#2a333f;--ink:#e6edf3;--mute:#8b98a7;--accent:#4fd1a5;--accent-ink:#06261b;
+    --ph:#1d3b31;--ph-ink:#7ff0c6;--warn:#f2b45b;--mono:ui-monospace,"JetBrains Mono","Cascadia Code",Menlo,Consolas,monospace;--sans:system-ui,-apple-system,"Segoe UI",Cantarell,sans-serif}
+  @media (prefers-color-scheme: light){:root{--bg:#f6f7f9;--panel:#fff;--panel2:#f2f4f7;--line:#dde2e8;--ink:#14191f;--mute:#5b6775;--accent:#0f9d74;--accent-ink:#fff;--ph:#d8f5ea;--ph-ink:#075c43;--warn:#9a5b00}}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 var(--sans)}
+  main{max-width:780px;margin:0 auto;padding:40px 16px 56px}
+  header{display:flex;align-items:center;gap:14px;margin-bottom:8px}
+  .logo{width:44px;height:44px;border-radius:12px;background:var(--accent);display:grid;place-items:center;flex:none}
+  h1{font-size:26px;line-height:1.2;margin:0}
+  .lede{color:var(--mute);margin:6px 0 32px;font-size:16px}
+  h2{font-size:18px;margin:36px 0 12px}
+  ol.steps{list-style:none;padding:0;margin:0;display:grid;gap:12px}
+  ol.steps li{display:grid;grid-template-columns:32px 1fr;gap:12px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+  .n{width:28px;height:28px;border-radius:50%;background:var(--ph);color:var(--ph-ink);font-weight:700;display:grid;place-items:center}
+  ol.steps li > div > b{display:block;margin-bottom:2px}
+  ol.steps p{margin:0;color:var(--mute)}
+  code,kbd{font:13px var(--mono);background:var(--panel2);border:1px solid var(--line);border-radius:5px;padding:1px 5px;color:var(--ink)}
+  .demo{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}
+  .demo p.note{margin:0 0 12px;color:var(--mute);font-size:14px}
+  label,.lab{display:block;font-size:13px;color:var(--mute);margin:14px 0 6px}
+  label:first-of-type{margin-top:0}
+  textarea,.out{width:100%;min-height:96px;resize:vertical;background:var(--panel2);color:var(--ink);border:1px solid var(--line);border-radius:9px;
+    padding:10px;font:13px/1.55 var(--mono);white-space:pre-wrap;word-break:break-word;margin:0}
+  .out:empty::before{content:attr(data-empty);color:var(--mute)}
+  textarea:focus{outline:2px solid color-mix(in srgb,var(--accent) 55%,transparent)}
+  mark{background:var(--ph);color:var(--ph-ink);border-radius:3px;padding:0 2px;font-weight:600}
+  mark.real{background:color-mix(in srgb,var(--warn) 22%,transparent);color:inherit;font-weight:500}
+  .row{display:flex;align-items:center;gap:10px;margin-top:8px;flex-wrap:wrap}
+  .meta{font-size:13px;color:var(--mute)}
+  button{font:600 13px var(--sans);border-radius:8px;border:1px solid var(--accent);background:var(--accent);color:var(--accent-ink);padding:7px 12px;cursor:pointer}
+  button:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+  ul.more{padding-left:20px;margin:0;color:var(--mute)}
+  ul.more li{margin:6px 0}
+  ul.more b{color:var(--ink)}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="logo"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="var(--accent-ink)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l7 3v5c0 4.5-3 8.2-7 10-4-1.8-7-5.5-7-10V6z"/><path d="M8.5 12h7M8.5 9h7M8.5 15h4"/></svg></div>
+    <h1>PromptVeil is ready</h1>
+  </header>
+  <p class="lede">Redact before you prompt, restore after it answers. Everything happens on this device.</p>
+
+  <h2>How it works</h2>
+  <ol class="steps">
+    <li><span class="n">1</span><div><b>Paste into an AI chat as usual</b>
+      <p>On ChatGPT, Claude, Gemini, Copilot, Perplexity, DeepSeek, Mistral and Grok, PromptVeil swaps emails, phone numbers, keys,
+      passwords, card numbers and IP addresses for placeholders like <code>[EMAIL_1]</code> before the site ever sees your paste.</p></div></li>
+    <li><span class="n">2</span><div><b>Ask the AI</b>
+      <p>Its answer uses the same placeholders. The same value always gets the same placeholder, so the AI can still tell who's who.</p></div></li>
+    <li><span class="n">3</span><div><b>Copy the answer with the real values back</b>
+      <p>Click <b>Copy with real values</b> under the answer, or select text and press <kbd id="shortcut">Ctrl+Shift+Y</kbd>
+      (or right-click → <b>Restore real values with PromptVeil</b>). The restored text goes to your clipboard, never into the AI's page.</p></div></li>
+  </ol>
+
+  <h2>Try it with fake data</h2>
+  <div class="demo">
+    <p class="note">This box runs only on this page. Nothing here is sent anywhere or added to your PromptVeil vault.</p>
+    <label for="demoIn">1. Paste or type something with fake personal data</label>
+    <textarea id="demoIn" spellcheck="false" placeholder="Customer jane@example.com on 10.0.4.12…"></textarea>
+    <div class="row"><button type="button" id="sample">Use sample data</button><span class="meta" id="demoMeta"></span></div>
+    <div class="lab" id="labScrubbed">2. What the AI would see</div>
+    <div class="out" id="demoScrubbed" aria-labelledby="labScrubbed" aria-live="polite" data-empty="Scrubbed text appears here."></div>
+    <label for="demoAnswer">3. The AI's answer (edit it if you like)</label>
+    <textarea id="demoAnswer" spellcheck="false" placeholder="An answer that uses the placeholders appears here."></textarea>
+    <div class="lab" id="labRestored">4. What you get back</div>
+    <div class="out" id="demoRestored" aria-labelledby="labRestored" data-empty="The answer with the real values restored appears here."></div>
+  </div>
+
+  <h2>Good to know</h2>
+  <ul class="more">
+    <li><b>Your own words.</b> PromptVeil doesn't recognize names or company names by itself. Add them under <b>Settings → Always hide</b> in the PromptVeil menu.</li>
+    <li><b>Typed text.</b> Only pasted text is scrubbed automatically. Turn on <b>Check typed text before sending</b> in Settings to also catch what you type.</li>
+    <li><b>Memory only.</b> The placeholder mapping is kept in memory and erased when you close the browser.</li>
+    <li><b>Pin it.</b> Click the puzzle-piece icon in the toolbar and pin PromptVeil to reach it quickly.</li>
+  </ul>
+</main>
+<script src="engine.js"></script>
+<script src="welcome.js"></script>
+</body>
+</html>
