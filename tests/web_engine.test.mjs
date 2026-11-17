@@ -59,3 +59,8 @@ for (const text of CASES.kept) {
     assert.deepEqual(found(text), []);
   });
 }
+
+test("built-in HOST allow list matches src/promptveil/builtin_allow.json", () => {
+  const shared = JSON.parse(readFileSync(new URL("../src/promptveil/builtin_allow.json", import.meta.url), "utf8")).host;
+  assert.deepEqual([...ctx.PromptVeil.BUILTIN_HOST_ALLOW].sort(), [...shared].sort());
+});
