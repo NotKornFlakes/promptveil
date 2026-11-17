@@ -7,6 +7,11 @@
   const lines = s => s.split("\n").map(x => x.trim()).filter(Boolean);
   const SUPPORTED = (chrome.runtime.getManifest().host_permissions || []).map(p => new URL(p.replace("/*", "/")).hostname);
   if (params.get("window")) document.body.classList.add("window");
+  $("help").addEventListener("click", e => { e.preventDefault(); chrome.tabs.create({ url: "welcome.html" }); window.close(); });
+  chrome.commands.getAll().then(cmds => {
+    const c = cmds.find(x => x.name === "restore-selection");
+    if (c && c.shortcut) $("shortcut").textContent = c.shortcut; else $("shortcut").textContent = "your shortcut (set one at chrome://extensions/shortcuts)";
+  }).catch(() => {});
 
   // ---------------------------------------------------------------- tabs
   function show(name) {
@@ -96,9 +101,11 @@
   $("reset").addEventListener("click", async () => { await send({ type: "reset" }); drawVault(); doRestore(); });
 
   // ---------------------------------------------------------------- settings
-  const s = await chrome.storage.local.get({ terms: [], allow: [] });
+  const s = await chrome.storage.local.get({ terms: [], allow: [], guardTyped: false });
   $("terms").value = s.terms.join("\n");
   $("allow").value = s.allow.join("\n");
+  $("guardTyped").checked = s.guardTyped === true;
+  $("guardTyped").addEventListener("change", () => chrome.storage.local.set({ guardTyped: $("guardTyped").checked }));
   let t;
   function save() {
     clearTimeout(t);

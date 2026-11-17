@@ -8,12 +8,15 @@
     --ph:#1d3b31;--ph-ink:#7ff0c6;--warn:#f2b45b;--mono:ui-monospace,"JetBrains Mono","Cascadia Code",Menlo,Consolas,monospace;--sans:system-ui,-apple-system,"Segoe UI",Cantarell,sans-serif}
   @media (prefers-color-scheme: light){:root{--bg:#f6f7f9;--panel:#fff;--panel2:#f2f4f7;--line:#dde2e8;--ink:#14191f;--mute:#5b6775;--accent:#0f9d74;--accent-ink:#fff;--ph:#d8f5ea;--ph-ink:#075c43;--warn:#9a5b00}}
   *{box-sizing:border-box}
+  html{overflow-x:hidden}
   body{margin:0;width:400px;min-height:520px;background:var(--bg);color:var(--ink);font:14px/1.45 var(--sans)}
   body.window{width:auto}
   header{display:flex;align-items:center;gap:10px;padding:14px 16px 10px}
   .logo{width:30px;height:30px;border-radius:8px;background:var(--accent);display:grid;place-items:center;flex:none}
   h1{font-size:16px;margin:0}
   .sub{font-size:12px;color:var(--mute)}
+  .help{margin-left:auto;font-size:12px;color:var(--mute);text-decoration:underline;text-underline-offset:2px}
+  .help:hover{color:var(--ink)}
   .site{margin:0 16px 10px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--panel);display:flex;align-items:center;gap:10px}
   .site .txt{flex:1;font-size:13px}
   .site .txt b{display:block;font-size:13.5px}
@@ -47,12 +50,16 @@
   .vault{max-height:300px;overflow:auto}
   .note{font-size:12px;color:var(--mute);margin:10px 0 0}
   .sites{font-size:12px;color:var(--mute);margin-top:12px}
+  label.check{display:flex;gap:8px;align-items:flex-start;margin:14px 0 0;font-size:12px;color:var(--mute);cursor:pointer}
+  label.check input{margin:2px 0 0;accent-color:var(--accent)}
+  label.check b{color:var(--ink);font-size:13px}
 </style>
 </head>
 <body>
 <header>
   <div class="logo"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent-ink)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8.2-7 10-4-1.8-7-5.5-7-10V6z"/><path d="M8.5 12h7M8.5 9h7M8.5 15h4"/></svg></div>
   <div><h1>PromptVeil</h1><div class="sub">Redact before you prompt · 100% local</div></div>
+  <a class="help" id="help" href="welcome.html" target="_blank">How it works</a>
 </header>
 
 <div class="site" id="siteBox">
@@ -72,7 +79,7 @@
   <textarea id="restoreIn" spellcheck="false" placeholder="Hi [TERM_2], we'll fix [HOST_1] on Tuesday…"></textarea>
   <div class="out" id="restoreOut" data-empty="Real values appear here, only inside PromptVeil."></div>
   <div class="row"><span class="meta" id="restoreMeta"></span><span class="spacer"></span><button class="btn primary" id="restoreCopy">Copy</button></div>
-  <p class="note">Tip: select the answer on the page, right-click → <b>Restore real values with PromptVeil</b>.</p>
+  <p class="note">Faster: click <b>Copy with real values</b> under an answer, or select text and right-click → <b>Restore real values with PromptVeil</b> (or press <b id="shortcut">Ctrl+Shift+Y</b>). All three copy straight to your clipboard.</p>
 </section>
 
 <section id="tab-scrub">
@@ -93,11 +100,14 @@
 
 <section id="tab-settings">
   <label for="terms">Always hide: names, clients, codenames (one per line)</label>
-  <textarea id="terms" spellcheck="false" placeholder="Marcus Bell&#10;Riverside Dental"></textarea>
+  <textarea id="terms" spellcheck="false" style="min-height:76px" placeholder="Marcus Bell&#10;Riverside Dental"></textarea>
   <label for="allow" style="margin-top:12px">Never hide (allow-list)</label>
-  <textarea id="allow" spellcheck="false" style="min-height:70px" placeholder="support@mycompany.com"></textarea>
+  <textarea id="allow" spellcheck="false" style="min-height:56px" placeholder="support@mycompany.com"></textarea>
   <div class="row"><span class="meta" id="saved"></span></div>
-  <p class="sites">Auto-scrub on paste works on ChatGPT, Claude, Gemini, Copilot, Perplexity, DeepSeek, Mistral and Grok. It covers pasted text only, not text you type.</p>
+  <label class="check" for="guardTyped"><input type="checkbox" id="guardTyped"> <span><b>Check typed text before sending</b><br>
+    When you press Enter or Send, PromptVeil stops the message once if it contains something sensitive and offers to hide it.
+    The site can still see what you type as you type it; this only stops it from being sent.</span></label>
+  <p class="sites">Auto-scrub on paste works on ChatGPT, Claude, Gemini, Copilot, Perplexity, DeepSeek, Mistral and Grok. Typed text is only checked if you turn on the option above.</p>
 </section>
 
 <script src="engine.js"></script>
