@@ -89,7 +89,13 @@
       : "Vault is empty. Paste into an AI chat first.";
   }
   $("restoreIn").addEventListener("input", doRestore);
-  $("restoreCopy").addEventListener("click", e => copy(restored, e.currentTarget)); // works while blurred
+  // Works while blurred. Goes through the service worker so the clipboard can be cleared later.
+  $("restoreCopy").addEventListener("click", async e => {
+    if (!restored) return;
+    const btn = e.currentTarget, old = btn.textContent;
+    try { await send({ type: "copyText", text: restored }); } catch (_) { btn.textContent = "Couldn't copy"; setTimeout(() => btn.textContent = old, 1500); return; }
+    btn.textContent = "Copied"; setTimeout(() => btn.textContent = old, 1200);
+  });
   const restoreReveal = revealer(
     () => { $("restoreOut").classList.remove("veiled"); $("restoreShow").textContent = "Hide"; },
     () => { $("restoreOut").classList.add("veiled"); $("restoreShow").textContent = "Show"; });

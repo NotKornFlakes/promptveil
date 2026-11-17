@@ -123,5 +123,36 @@
     say($("idleMsg"), "Saved.");
   });
 
+  // Clipboard auto-clear needs the optional clipboardRead permission (asked for here, during the
+  // click, because Chrome only shows the prompt for a user gesture). Declined: it stays off.
+  const radios = [...document.querySelectorAll('input[name="clip"]')];
+  const setRadio = v => radios.forEach(r => { r.checked = Number(r.value) === v; });
+  (async () => {
+    const { clipboardClearSeconds: secs } = await chrome.storage.local.get({ clipboardClearSeconds: 0 });
+    const granted = await chrome.permissions.contains({ permissions: ["clipboardRead"] });
+    setRadio(secs && granted ? secs : 0);
+    if (secs && !granted) await chrome.storage.local.set({ clipboardClearSeconds: 0 }); // permission was removed elsewhere
+  })();
+  for (const r of radios) {
+    r.addEventListener("change", async () => {
+      const secs = Number(r.value);
+      if (!secs) {
+        await chrome.storage.local.set({ clipboardClearSeconds: 0 });
+        await chrome.permissions.remove({ permissions: ["clipboardRead"] }).catch(() => {});
+        return say($("clipMsg"), "Off. PromptVeil no longer has permission to read the clipboard.");
+      }
+      let granted = false;
+      try { granted = await chrome.permissions.request({ permissions: ["clipboardRead"] }); } catch (_) { granted = false; }
+      if (!granted) {
+        setRadio(0);
+        await chrome.storage.local.set({ clipboardClearSeconds: 0 });
+        return say($("clipMsg"), "Auto-clear stays off. It needs permission to read the clipboard, to check it still holds " +
+          "what PromptVeil copied before clearing it. Without that check it could wipe something you copied later.", true);
+      }
+      await chrome.storage.local.set({ clipboardClearSeconds: secs });
+      say($("clipMsg"), "On. Copies with real values are cleared from the clipboard if nothing else was copied since.");
+    });
+  }
+
   draw();
 })();

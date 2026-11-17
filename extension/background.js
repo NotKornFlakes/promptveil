@@ -17,6 +17,7 @@ const C = self.PromptVeilCrypto;
 const DEFAULTS = { disabledSites: [], guardTyped: false };
 const IDLE_CHOICES = [15, 30, 60, 240, 0]; // minutes; 0 = never
 const IDLE_DEFAULT = 60;
+const CLEAR_CHOICES = [0, 30, 60, 120]; // seconds; 0 = never (the default: it needs clipboardRead)
 const MAX_TEXT = 1_000_000; // characters; bigger requests are refused
 const MIN_PASSWORD = 8;
 const AI_SITES = chrome.runtime.getManifest().content_scripts[0].matches;
@@ -60,6 +61,7 @@ async function lockIfPassword() {
   if (sealed && sealed.mode === "password") await serial(lock);
 }
 async function onAlarm(alarm) {
+  if (alarm.name === "pv-clip") return clearClipboardIfUnchanged();
   if (alarm.name !== "pv-idle") return;
   await ready;
   await chrome.storage.session.set({ mapping: {} });
@@ -296,13 +298,56 @@ function writeClipboard(text) {
   return run;
 }
 
+// --- clearing the clipboard after copying real values (optional) ------------------------
+// Only clears if the clipboard still holds what PromptVeil copied: a SHA-256 of the copied text
+// is kept in session memory, and the offscreen document compares it with the clipboard. Reading
+// the clipboard needs the optional clipboardRead permission, which the user grants when they
+// turn this on. Without it nothing is scheduled.
+const canReadClipboard = () => chrome.permissions.contains({ permissions: ["clipboardRead"] });
+const normalizeNewlines = t => t.replace(/\r\n?/g, "\n");
+
+async function scheduleClipboardClear(text) {
+  const { clipboardClearSeconds: secs } = await chrome.storage.local.get({ clipboardClearSeconds: 0 });
+  if (!CLEAR_CHOICES.includes(secs) || !secs || !(await canReadClipboard())) {
+    await chrome.storage.session.remove("clipHash");
+    await chrome.alarms.clear("pv-clip");
+    return;
+  }
+  await chrome.storage.session.set({ clipHash: await C.sha256(normalizeNewlines(text)) });
+  await chrome.alarms.create("pv-clip", { delayInMinutes: secs / 60 });
+}
+
+async function clearClipboardIfUnchanged() {
+  await ready;
+  const { clipHash } = await chrome.storage.session.get("clipHash");
+  await chrome.storage.session.remove("clipHash");
+  if (!clipHash || !(await canReadClipboard())) return { cleared: false };
+  const run = clip.then(async () => {
+    await ensureOffscreen();
+    try {
+      const r = await chrome.runtime.sendMessage({ target: "offscreen", type: "clipboard-clear-if", hash: clipHash });
+      return { cleared: !!(r && r.cleared === true) };
+    } finally {
+      await chrome.offscreen.closeDocument().catch(() => {});
+    }
+  });
+  clip = run.catch(() => {});
+  return run;
+}
+
+// Copy text with real values in it, then (if turned on) schedule the clipboard clear.
+async function copyReal(text) {
+  await writeClipboard(text);
+  await scheduleClipboardClear(text).catch(() => {});
+}
+
 // Restore `text` and copy it. Returns only a count (plus why nothing happened), never the text.
 async function restoreToClipboard(text) {
   const mapping = await getMapping();
   if (!Object.keys(mapping).length) return { count: 0, reason: "empty" };
   const r = new Veil({ mapping }).restore(text);
   if (!r.count) return { count: 0, reason: "none" };
-  await writeClipboard(r.text);
+  await copyReal(r.text);
   return { count: r.count };
 }
 
@@ -354,6 +399,10 @@ async function handle(msg, sender) {
 
     case "vault":
       return { mapping: await getMapping() };
+
+    case "copyText": // the popup's Copy button for restored text
+      await copyReal(textOf(msg));
+      return { ok: true };
 
     case "reset":
       await chrome.storage.session.set({ mapping: {} });

@@ -1,7 +1,7 @@
 """End-to-end test: loads the unpacked extension in Chrome and pastes into stand-in AI chat pages.
 Run: python3 scripts/build_extension.py && python3 tests/extension_e2e.py  (needs playwright + Chrome for Testing)
 """
-import base64, json, os, sys, tempfile
+import base64, json, os, shutil, sys, tempfile
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 
@@ -617,6 +617,23 @@ with sync_playwright() as p, tempfile.TemporaryDirectory() as prof:
           and pa.locator("promptveil-copy").count() == 0 and sw.evaluate("listState()")["locked"] is True,
           [vault_had, pa.locator("promptveil-copy").count()])
 
+    # 16b. Clipboard auto-clear: clipboardRead is optional and not granted at install.
+    manifest = json.loads((ROOT / "extension" / "manifest.json").read_text())
+    check("clipboardRead is optional, not requested at install",
+          "clipboardRead" in manifest.get("optional_permissions", []) and "clipboardRead" not in manifest["permissions"]
+          and sw.evaluate("chrome.permissions.contains({permissions: ['clipboardRead']})") is False)
+    opt.bring_to_front(); opt.reload(); opt.wait_for_timeout(300)
+    opt.evaluate("() => { chrome.permissions.request = async () => false; }")  # the user clicks "Deny"
+    opt.click('input[name="clip"][value="60"]'); opt.wait_for_timeout(300)
+    check("auto-clear: declining the permission leaves it off and says why",
+          opt.is_checked('input[name="clip"][value="0"]') and "needs permission to read the clipboard" in opt.inner_text("#clipMsg")
+          and sw.evaluate("chrome.storage.local.get({clipboardClearSeconds: 0})")["clipboardClearSeconds"] == 0, opt.inner_text("#clipMsg"))
+    sw.evaluate("chrome.storage.local.set({clipboardClearSeconds: 60})")
+    sw.evaluate("restoreToClipboard('mail [EMAIL_1]')")
+    check("auto-clear: nothing scheduled without the permission",
+          sw.evaluate("chrome.alarms.get('pv-clip')") is None and "clipHash" not in session())
+    sw.evaluate("chrome.storage.local.set({clipboardClearSeconds: 0})")
+
     # 17. No real value in console output, errors, the toolbar badge or tooltip, or page titles.
     pg3.evaluate("console.log('probe-page')"); sw.evaluate("console.log('probe-sw')"); pg3.wait_for_timeout(200)
     sw_logs = sw.evaluate("self.__logs")
@@ -631,6 +648,45 @@ with sync_playwright() as p, tempfile.TemporaryDirectory() as prof:
     check("no real value in badges, tooltips or page titles", not any(r in "|".join(badges + titles) for r in REAL), badges + titles)
 
     ctx.close()
+
+    # 18. Clipboard auto-clear with the permission granted. Chrome's permission prompt can't be
+    # answered from Playwright, so this uses a copy of the extension where clipboardRead is a
+    # required permission (granted at install) instead of an optional one.
+    with tempfile.TemporaryDirectory() as prof2, tempfile.TemporaryDirectory() as ext2:
+        shutil.copytree(EXT, ext2, dirs_exist_ok=True)
+        m = json.loads(Path(ext2, "manifest.json").read_text())
+        m["permissions"].append("clipboardRead"); m.pop("optional_permissions")
+        Path(ext2, "manifest.json").write_text(json.dumps(m))
+        ctx2 = p.chromium.launch_persistent_context(prof2, executable_path=CHROME, headless=False,
+            args=["--headless=new", f"--disable-extensions-except={ext2}", f"--load-extension={ext2}"])
+        ctx2.route("https://example.com/**", lambda r: r.fulfill(body=TEXTAREA_PAGE, content_type="text/html"))
+        ctx2.grant_permissions(["clipboard-read", "clipboard-write"], origin="https://example.com")
+        sw2 = ctx2.service_workers[0] if ctx2.service_workers else ctx2.wait_for_event("serviceworker")
+        id2 = sw2.url.split("/")[2]
+        plain2 = ctx2.new_page(); plain2.goto("https://example.com/")
+        o2 = ctx2.new_page(); o2.goto(f"chrome-extension://{id2}/options.html"); o2.wait_for_timeout(300)
+        o2.click('input[name="clip"][value="60"]')
+        o2.wait_for_function("() => document.getElementById('clipMsg').textContent.startsWith('On')", timeout=5000)
+        check("auto-clear: turned on once the permission is granted",
+              sw2.evaluate("chrome.storage.local.get('clipboardClearSeconds')")["clipboardClearSeconds"] == 60)
+        sw2.evaluate("chrome.storage.session.set({mapping: {EMAIL_1: 'jo@example.org'}})")
+        sw2.evaluate("restoreToClipboard('mail [EMAIL_1]')")
+        a = sw2.evaluate("chrome.alarms.get('pv-clip')"); t = sw2.evaluate("Date.now()")
+        check("auto-clear: alarm set 60 s after copying, only a hash kept",
+              a is not None and abs(a["scheduledTime"] - (t + 60000)) < 5000
+              and "jo@example.org" not in json.dumps(sw2.evaluate("chrome.storage.session.get('clipHash')")), a)
+        before = clipboard(plain2)
+        r = sw2.evaluate("onAlarm({name: 'pv-clip'})")
+        after = clipboard(plain2)
+        check("auto-clear: clears the clipboard when it still holds the copy",
+              before == "mail jo@example.org" and r == {"cleared": True} and after == "", [before, r, after])
+        sw2.evaluate("restoreToClipboard('mail [EMAIL_1]')")
+        plain2.evaluate("t => navigator.clipboard.writeText(t)", "something the user copied later")
+        r = sw2.evaluate("onAlarm({name: 'pv-clip'})")
+        after = clipboard(plain2)
+        check("auto-clear: leaves the clipboard alone if something else was copied since",
+              r == {"cleared": False} and after == "something the user copied later", [r, after])
+        ctx2.close()
 
 print(f"\n{len(failures)} failure(s)")
 sys.exit(1 if failures else 0)

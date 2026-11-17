@@ -30,6 +30,9 @@
   .msg{min-height:1.4em;font-size:14px}
   .msg.bad{color:var(--bad)}
   hr{border:0;border-top:1px solid var(--line);margin:16px 0}
+  .radios{display:flex;flex-wrap:wrap;gap:8px 18px;margin:10px 0}
+  .radios label{display:flex;align-items:center;gap:6px;font-size:14px;color:var(--ink);cursor:pointer}
+  .radios input{accent-color:var(--accent)}
   [hidden]{display:none !important}
 </style>
 </head>
@@ -84,6 +87,22 @@
       PromptVeil also locks then, and whenever your computer locks or sits idle that long. Closing the browser always
       clears the vault and locks.</p>
     <p class="msg" id="idleMsg" role="status"></p>
+  </section>
+
+  <section aria-labelledby="clipTitle">
+    <h2 id="clipTitle">Clear the clipboard</h2>
+    <p class="mute" id="clipLead">After PromptVeil copies text with real values in it, clear the clipboard after:</p>
+    <div class="radios" role="radiogroup" aria-labelledby="clipLead">
+      <label><input type="radio" name="clip" value="0"> Never</label>
+      <label><input type="radio" name="clip" value="30"> 30 seconds</label>
+      <label><input type="radio" name="clip" value="60"> 1 minute</label>
+      <label><input type="radio" name="clip" value="120"> 2 minutes</label>
+    </div>
+    <p class="mute">PromptVeil only clears it if it still holds what PromptVeil copied, so it never wipes something you
+      copied later. To check, it needs permission to read the clipboard: Chrome asks when you turn this on, and the
+      permission is given back when you turn it off. What it reads is compared in memory and never kept or sent.
+      Clipboard managers may keep their own copy.</p>
+    <p class="msg" id="clipMsg" role="status"></p>
   </section>
 
   <section aria-labelledby="backupTitle">

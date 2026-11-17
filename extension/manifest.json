@@ -13,6 +13,7 @@
   "background": { "service_worker": "background.js" },
   "options_ui": { "page": "options.html", "open_in_tab": true },
   "permissions": ["storage", "contextMenus", "scripting", "offscreen", "clipboardWrite", "alarms", "idle"],
+  "optional_permissions": ["clipboardRead"],
   "host_permissions": [
     "https://chatgpt.com/*",
     "https://chat.openai.com/*",
