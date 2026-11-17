@@ -22,20 +22,43 @@ server*. It just never sees the real data.
 ## Browser extension (Chrome, Brave, Edge)
 
 Paste into ChatGPT, Claude, Gemini, Copilot, Perplexity, DeepSeek, Mistral or Grok as usual. PromptVeil
-scrubs the text **before the site ever sees it** and shows a small "Hid 7 items" notice. To get the real
-values back, select the AI's answer, right-click → **Restore real values with PromptVeil**, then copy.
+scrubs the text **before the site ever sees it** and shows a small "Hid 7 items" notice. When the answer
+comes back, click **Copy with real values** under it. PromptVeil puts the real values back and copies the
+result to your clipboard, ready to paste wherever you need it.
 
-- Real values are restored only inside the extension's own window, never in the AI site's page, so the site can't read them.
+Other ways to get the real values back:
+
+- Select text, then right-click → **Restore real values with PromptVeil**, or press **Ctrl+Shift+Y**
+  (**Cmd+Shift+Y** on Mac). Both copy straight to the clipboard and show a short notice.
+- Right-click → **Restore and view…** opens a window that shows the restored text before you copy it.
+
+Optional: turn on **Check typed text before sending** in Settings (off by default). If you press Enter or
+Send with something sensitive in the chat box, the message is stopped once and a **Hide N items** button
+swaps the sensitive parts for placeholders. The site can still see what you type as you type it.
+
+How it stays private:
+
+- Real values are restored only inside the extension (its service worker, a hidden offscreen page that writes
+  the clipboard, and its own windows), never in the AI site's page, so the site can't read them. The page
+  script only ever learns whether an answer contains placeholders PromptVeil knows, and how many it restored.
 - The vault lives in `chrome.storage.session` (memory only, erased when the browser closes).
 - If scrubbing ever fails, the paste is **blocked**, not let through.
-- The extension's CSP is `connect-src 'none'`, so it cannot make network requests.
+- The extension's code makes no network requests. Its CSP (`connect-src 'none'`) enforces that for the
+  extension's own pages and service worker. The content script runs inside the AI site's page and follows
+  that site's own rules.
+- The **Copy with real values** button finds answers with per-site selectors (`SITES` in
+  `extension/content.js`). If a site changes its markup, the button stops appearing there until the selectors
+  are updated; right-click and the shortcut keep working.
 
 **Try it now:** `brave://extensions` → Developer mode → **Load unpacked** → pick the `extension/` folder.
+A welcome page with a try-it box opens on install.
 **Publish it:** see [STORE_LISTING.md](STORE_LISTING.md). Privacy policy: [PRIVACY.md](PRIVACY.md).
 
 ```bash
 python3 scripts/build_extension.py   # syncs engine.js from web/index.html, writes dist/*.zip
-python3 tests/extension_e2e.py       # 16 checks in real Chrome (needs playwright)
+# 65 checks in real Chrome (needs playwright). Branded Chrome 137+ ignores --load-extension,
+# so point CHROME at Chrome for Testing (e.g. the one `playwright install chromium` downloads).
+CHROME=/path/to/chrome-for-testing python3 tests/extension_e2e.py
 ```
 
 ## Two more ways to use it
